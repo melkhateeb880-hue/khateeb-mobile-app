@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Revenue Control",
+    "slug": "khateeb-revenue-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.khateeb.revenuecontrol",
+      "versionCode": 1
+    },
+    "ios": {
+      "bundleIdentifier": "com.khateeb.revenuecontrol"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

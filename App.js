@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  ImageBackground,
   Linking,
   Platform,
   Pressable,
@@ -15,7 +16,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 
-const LAN_API_HOST = "192.168.1.5";
+const LAN_API_HOST = "172.20.10.3";
 const WEB_API_HOST =
   Platform.OS === "web" &&
   typeof window !== "undefined" &&
@@ -23,9 +24,11 @@ const WEB_API_HOST =
     ? window.location.hostname
     : "127.0.0.1";
 const API_HOST = Platform.OS === "web" ? WEB_API_HOST : LAN_API_HOST;
-const LOCAL_API_BASE_URL = `http://${API_HOST}:8003`;
+const LOCAL_API_BASE_URL = `http://${API_HOST}:8007`;
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || LOCAL_API_BASE_URL;
 const APP_FONT = Platform.OS === "web" ? "Segoe UI Light, Segoe UI, Arial" : "sans-serif-light";
+const LOGIN_USER = "admin";
+const LOGIN_PASSWORD = "Rahim159357";
 
 const DESTINATIONS = [
   { key: "hurghada", label: "Hurghada" },
@@ -71,6 +74,20 @@ function formatMoney(value) {
 function textValue(value) {
   if (value === null || value === undefined || value === "") return "-";
   return String(value);
+}
+
+function uniqueOptionValues(values, limit = 80) {
+  const seen = new Set();
+  const options = [];
+  values.forEach((value) => {
+    if (value === null || value === undefined || value === "") return;
+    const option = String(value).trim();
+    const key = option.toLowerCase();
+    if (!option || option === "-" || seen.has(key)) return;
+    seen.add(key);
+    options.push(option);
+  });
+  return options.sort((a, b) => a.localeCompare(b)).slice(0, limit);
 }
 
 async function getJson(path) {
@@ -146,10 +163,11 @@ function EmptyState({ message }) {
   );
 }
 
-function ReportButton({ label, url }) {
+function ReportButton({ label, url, tone = "gold", icon }) {
   return (
-    <Pressable style={styles.reportButton} onPress={() => Linking.openURL(url)}>
-      <Text style={styles.reportButtonText}>{label}</Text>
+    <Pressable style={[styles.reportButton, styles[`reportButton_${tone}`]]} onPress={() => Linking.openURL(url)}>
+      {!!icon && <Ionicons name={icon} size={16} color={tone === "excel" ? "#157347" : tone === "pdf" ? "#c0392b" : "#d8aa43"} />}
+      <Text style={[styles.reportButtonText, styles[`reportButtonText_${tone}`]]}>{label}</Text>
     </Pressable>
   );
 }
@@ -255,17 +273,17 @@ function DashboardView({
   onSearch,
   onClear,
 }) {
+  const [isHotelFocused, setIsHotelFocused] = useState(false);
   const pricing = pricingDashboard?.pricing_kpis || {};
   const turnover = pricingDashboard?.turnover_kpis || {};
   const contract = contractSummary || {};
   const inhouse = inhouseSummary || {};
   const inhouseCards = inhouse.hotel_cards || [];
+  const hotelQuery = filters.hotel.trim().toLowerCase();
   const suggestions = (hotelOptions || [])
-    .filter((hotel) => {
-      const query = filters.hotel.trim().toLowerCase();
-      return query && hotel.toLowerCase().includes(query);
-    })
-    .slice(0, 8);
+    .filter((hotel) => !hotelQuery || hotel.toLowerCase().includes(hotelQuery))
+    .slice(0, hotelQuery ? 10 : 12);
+  const showSuggestions = isHotelFocused && !!suggestions.length;
 
   return (
     <>
@@ -296,17 +314,21 @@ function DashboardView({
             <TextInput
               value={filters.hotel}
               onChangeText={(value) => setFilters((prev) => ({ ...prev, hotel: value }))}
+              onFocus={() => setIsHotelFocused(true)}
               placeholder="Start typing hotel name..."
               placeholderTextColor="#718397"
               style={styles.input}
             />
-            {!!suggestions.length && (
+            {showSuggestions && (
               <View style={styles.suggestionBox}>
                 {suggestions.map((hotel) => (
                   <Pressable
                     key={hotel}
                     style={styles.suggestionItem}
-                    onPress={() => setFilters((prev) => ({ ...prev, hotel }))}
+                    onPress={() => {
+                      setFilters((prev) => ({ ...prev, hotel }));
+                      setIsHotelFocused(false);
+                    }}
                   >
                     <Text style={styles.suggestionText} numberOfLines={1}>{hotel}</Text>
                   </Pressable>
@@ -315,10 +337,20 @@ function DashboardView({
             )}
           </View>
           <View style={styles.searchField}>
-            <Text style={styles.inputLabel}>Date</Text>
+            <Text style={styles.inputLabel}>Date From</Text>
             <TextInput
-              value={filters.date}
-              onChangeText={(value) => setFilters((prev) => ({ ...prev, date: value }))}
+              value={filters.dateFrom}
+              onChangeText={(value) => setFilters((prev) => ({ ...prev, dateFrom: value }))}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor="#718397"
+              style={styles.input}
+            />
+          </View>
+          <View style={styles.searchField}>
+            <Text style={styles.inputLabel}>Date To</Text>
+            <TextInput
+              value={filters.dateTo}
+              onChangeText={(value) => setFilters((prev) => ({ ...prev, dateTo: value }))}
               placeholder="YYYY-MM-DD"
               placeholderTextColor="#718397"
               style={styles.input}
@@ -419,9 +451,109 @@ function KpiTile({ label, value, sub, active, tone = "normal", onPress }) {
   );
 }
 
-function PricingView({ dashboard, filters, setFilters, onSearch, onClear }) {
+function SmartSearchField({
+  name,
+  label,
+  value,
+  placeholder,
+  options = [],
+  focusedField,
+  setFocusedField,
+  setFilters,
+  keyboardType = "default",
+  onSubmit,
+}) {
+  const query = value.trim().toLowerCase();
+  const suggestions = options
+    .filter((option) => !query || option.toLowerCase().includes(query))
+    .slice(0, query ? 10 : 12);
+  const isFocused = focusedField === name;
+
+  return (
+    <View style={[styles.pricingFilterField, name === "hotel" && styles.pricingFilterFieldFull]}>
+      <Text style={styles.inputLabel}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={(nextValue) => setFilters((prev) => ({ ...prev, [name]: nextValue }))}
+        onFocus={() => setFocusedField(name)}
+        placeholder={placeholder}
+        placeholderTextColor="#718397"
+        style={styles.input}
+        keyboardType={keyboardType}
+        onSubmitEditing={onSubmit}
+      />
+      {isFocused && !!suggestions.length && (
+        <View style={styles.suggestionBox}>
+          {suggestions.map((option) => (
+            <Pressable
+              key={`${name}-${option}`}
+              style={styles.suggestionItem}
+              onPress={() => {
+                setFilters((prev) => ({ ...prev, [name]: option }));
+                setFocusedField("");
+              }}
+            >
+              <Text style={styles.suggestionText} numberOfLines={1}>{option}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function PricingView({ dashboard, hotelOptions, filters, setFilters, onSearch, onClear }) {
+  const [focusedField, setFocusedField] = useState("");
+  const [mailPanelOpen, setMailPanelOpen] = useState(false);
+  const [mailAddress, setMailAddress] = useState("");
+  const [mailFormat, setMailFormat] = useState("xlsx");
+  const [savedMails, setSavedMails] = useState([]);
   const rows = dashboard?.rows || [];
   const pricing = dashboard?.pricing_kpis || {};
+  const params = [];
+  if (filters.hotel.trim()) params.push(`hotel=${encodeURIComponent(filters.hotel.trim())}`);
+  if (filters.stars.trim()) params.push(`stars=${encodeURIComponent(filters.stars.trim())}`);
+  if (filters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(filters.dateFrom.trim())}`);
+  if (filters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(filters.dateTo.trim())}`);
+  if (filters.room.trim()) params.push(`room=${encodeURIComponent(filters.room.trim())}`);
+  if (filters.board.trim()) params.push(`board=${encodeURIComponent(filters.board.trim())}`);
+  if (filters.price.trim()) params.push(`price=${encodeURIComponent(filters.price.trim())}`);
+  const query = params.length ? `?${params.join("&")}` : "";
+  const pricingExcelUrl = `${API_BASE_URL}/export/pricing/${dashboard?.destination || "Hurghada"}.xlsx${query}`;
+  const pricingPdfUrl = `${API_BASE_URL}/export/pricing/${dashboard?.destination || "Hurghada"}.pdf${query}`;
+  const selectedMailUrl = mailFormat === "pdf" ? pricingPdfUrl : pricingExcelUrl;
+  const roomOptions = uniqueOptionValues(rows.map((row) => row["Room Type"]));
+  const boardOptions = uniqueOptionValues(rows.map((row) => row.Board));
+  const starOptions = ["5", "4", "3", "2", "1"];
+  const priceOptions = uniqueOptionValues(
+    rows.flatMap((row) => [row.Selling, row.Buying, row["Contract Rate"]])
+      .filter((value) => value !== null && value !== undefined && value !== "")
+      .map((value) => String(Math.round(Number(value))))
+      .filter((value) => value !== "NaN"),
+    24
+  );
+  const sendReportByMail = useCallback(() => {
+    const email = mailAddress.trim();
+    if (!email) return;
+    const nextSaved = [email, ...savedMails.filter((item) => item.toLowerCase() !== email.toLowerCase())].slice(0, 8);
+    setSavedMails(nextSaved);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      window.localStorage.setItem("khateeb_report_mails", JSON.stringify(nextSaved));
+    }
+    const subject = encodeURIComponent(`Pricing ${mailFormat.toUpperCase()} Report`);
+    const body = encodeURIComponent(`Hello,\n\nPlease download the ${mailFormat.toUpperCase()} pricing report from this link:\n${selectedMailUrl}`);
+    Linking.openURL(`mailto:${email}?subject=${subject}&body=${body}`);
+  }, [mailAddress, mailFormat, savedMails, selectedMailUrl]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem("khateeb_report_mails") || "[]");
+      if (Array.isArray(stored)) setSavedMails(stored.filter(Boolean).slice(0, 8));
+    } catch {
+      setSavedMails([]);
+    }
+  }, []);
 
   return (
     <>
@@ -437,20 +569,162 @@ function PricingView({ dashboard, filters, setFilters, onSearch, onClear }) {
         <TextInput
           value={filters.hotel}
           onChangeText={(value) => setFilters((prev) => ({ ...prev, hotel: value }))}
+          onFocus={() => setFocusedField("hotel")}
           placeholder="Search hotel..."
           placeholderTextColor="#9aa3ad"
           style={styles.searchBarInput}
           onSubmitEditing={onSearch}
         />
       </View>
+      {focusedField === "hotel" && !!hotelOptions?.length && (
+        <View style={styles.pricingTopSuggestions}>
+          {hotelOptions
+            .filter((hotel) => !filters.hotel.trim() || hotel.toLowerCase().includes(filters.hotel.trim().toLowerCase()))
+            .slice(0, filters.hotel.trim() ? 10 : 12)
+            .map((hotel) => (
+              <Pressable
+                key={hotel}
+                style={styles.suggestionItem}
+                onPress={() => {
+                  setFilters((prev) => ({ ...prev, hotel }));
+                  setFocusedField("");
+                }}
+              >
+                <Text style={styles.suggestionText} numberOfLines={1}>{hotel}</Text>
+              </Pressable>
+            ))}
+        </View>
+      )}
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterChipsRow}>
-        <Pressable style={styles.filterChip}><Text style={styles.filterChipText}>Sharm</Text></Pressable>
-        <Pressable style={styles.filterChip}><Text style={styles.filterChipText}>All Stars</Text></Pressable>
-        <Pressable style={styles.filterChip}><Text style={styles.filterChipText}>All Board</Text></Pressable>
-        <Pressable style={styles.filterChip}><Text style={styles.filterChipText}>{filters.dateFrom || "Date"}</Text></Pressable>
-        <Pressable style={styles.filterChip} onPress={onClear}><Text style={styles.filterChipText}>Clear</Text></Pressable>
-      </ScrollView>
+      <View style={styles.pricingFiltersBox}>
+        <View style={styles.pricingFiltersGrid}>
+          <SmartSearchField
+            name="stars"
+            label="Stars"
+            value={filters.stars}
+            placeholder="All stars"
+            options={starOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            keyboardType="numeric"
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="room"
+            label="Room Name"
+            value={filters.room}
+            placeholder="Start typing room..."
+            options={roomOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="board"
+            label="Meal Plan"
+            value={filters.board}
+            placeholder="Start typing meal..."
+            options={boardOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="dateFrom"
+            label="Date From"
+            value={filters.dateFrom}
+            placeholder="YYYY-MM-DD"
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="dateTo"
+            label="Date To"
+            value={filters.dateTo}
+            placeholder="YYYY-MM-DD"
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="price"
+            label="Price"
+            value={filters.price}
+            placeholder="Search price..."
+            options={priceOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            keyboardType="numeric"
+            onSubmit={onSearch}
+          />
+        </View>
+        <View style={styles.searchActions}>
+          <Pressable style={styles.searchButton} onPress={onSearch}>
+            <Text style={styles.searchButtonText}>Search Pricing</Text>
+          </Pressable>
+          <Pressable style={styles.clearButton} onPress={onClear}>
+            <Text style={styles.clearButtonText}>Clear</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.contractReportBox}>
+        <ReportButton label="Excel" icon="document-text-outline" tone="excel" url={pricingExcelUrl} />
+        <ReportButton label="PDF" icon="document-outline" tone="pdf" url={pricingPdfUrl} />
+        <Pressable style={styles.mailButton} onPress={() => setMailPanelOpen((value) => !value)}>
+          <Ionicons name="send-outline" size={16} color="#1b2430" />
+          <Text style={styles.mailButtonText}>Send by mail</Text>
+        </Pressable>
+      </View>
+
+      {mailPanelOpen && (
+        <View style={styles.mailPanel}>
+          <Text style={styles.inputLabel}>Recipient Email</Text>
+          <TextInput
+            value={mailAddress}
+            onChangeText={setMailAddress}
+            placeholder="example@email.com"
+            placeholderTextColor="#718397"
+            autoCapitalize="none"
+            keyboardType="email-address"
+            style={styles.input}
+          />
+          {!!savedMails.length && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedMailRow}>
+              {savedMails.map((email) => (
+                <Pressable key={email} style={styles.savedMailChip} onPress={() => setMailAddress(email)}>
+                  <Text style={styles.savedMailText}>{email}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          <Text style={styles.inputLabel}>File Type</Text>
+          <View style={styles.mailFormatRow}>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "xlsx" && styles.mailFormatButtonActiveExcel]}
+              onPress={() => setMailFormat("xlsx")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "xlsx" && styles.mailFormatTextExcel]}>Excel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "pdf" && styles.mailFormatButtonActivePdf]}
+              onPress={() => setMailFormat("pdf")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "pdf" && styles.mailFormatTextPdf]}>PDF</Text>
+            </Pressable>
+          </View>
+          <Pressable style={styles.sendMailConfirm} onPress={sendReportByMail}>
+            <Text style={styles.searchButtonText}>Send</Text>
+          </Pressable>
+        </View>
+      )}
 
       <View style={styles.pricingKpiGrid}>
         <StatCard label="Total Hotels" value={formatNumber(pricing.total_hotels)} />
@@ -505,10 +779,142 @@ function PricingView({ dashboard, filters, setFilters, onSearch, onClear }) {
   );
 }
 
-function TurnoverView({ summary, rows, destination, search }) {
-  const query = search.trim() ? `?hotel=${encodeURIComponent(search.trim())}` : "";
+function TurnoverView({ summary, rows, destination, hotelOptions, filters, setFilters, onSearch, onClear }) {
+  const [focusedField, setFocusedField] = useState("");
+  const [mailPanelOpen, setMailPanelOpen] = useState(false);
+  const [mailAddress, setMailAddress] = useState("");
+  const [mailFormat, setMailFormat] = useState("xlsx");
+  const [savedMails, setSavedMails] = useState([]);
+  const params = [];
+  if (filters.hotel.trim()) params.push(`hotel=${encodeURIComponent(filters.hotel.trim())}`);
+  if (filters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(filters.dateFrom.trim())}`);
+  if (filters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(filters.dateTo.trim())}`);
+  const query = params.length ? `?${params.join("&")}` : "";
+  const salesExcelUrl = `${API_BASE_URL}/export/sales/${destination}.xlsx${query}`;
+  const salesPdfUrl = `${API_BASE_URL}/export/sales/${destination}.pdf${query}`;
+  const selectedMailUrl = mailFormat === "pdf" ? salesPdfUrl : salesExcelUrl;
+
+  const sendReportByMail = useCallback(() => {
+    const email = mailAddress.trim();
+    if (!email) return;
+    const nextSaved = [email, ...savedMails.filter((item) => item.toLowerCase() !== email.toLowerCase())].slice(0, 8);
+    setSavedMails(nextSaved);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      window.localStorage.setItem("khateeb_report_mails", JSON.stringify(nextSaved));
+    }
+    const subject = encodeURIComponent(`Revenue ${mailFormat.toUpperCase()} Report`);
+    const body = encodeURIComponent(`Hello,\n\nPlease download the ${mailFormat.toUpperCase()} revenue report from this link:\n${selectedMailUrl}`);
+    Linking.openURL(`mailto:${email}?subject=${subject}&body=${body}`);
+  }, [mailAddress, mailFormat, savedMails, selectedMailUrl]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem("khateeb_report_mails") || "[]");
+      if (Array.isArray(stored)) setSavedMails(stored.filter(Boolean).slice(0, 8));
+    } catch {
+      setSavedMails([]);
+    }
+  }, []);
+
   return (
     <>
+      <View style={styles.pricingFiltersBox}>
+        <Text style={styles.inputLabel}>Revenue Search</Text>
+        <SmartSearchField
+          name="hotel"
+          label="Hotel Name"
+          value={filters.hotel}
+          placeholder="Start typing hotel name..."
+          options={hotelOptions}
+          focusedField={focusedField}
+          setFocusedField={setFocusedField}
+          setFilters={setFilters}
+          onSubmit={onSearch}
+        />
+        <View style={styles.revenueDateGrid}>
+          <SmartSearchField
+            name="dateFrom"
+            label="Check In From"
+            value={filters.dateFrom}
+            placeholder="YYYY-MM-DD"
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="dateTo"
+            label="Check In To"
+            value={filters.dateTo}
+            placeholder="YYYY-MM-DD"
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+        </View>
+        <View style={styles.searchActions}>
+          <Pressable style={styles.searchButton} onPress={onSearch}>
+            <Text style={styles.searchButtonText}>Search Revenue</Text>
+          </Pressable>
+          <Pressable style={styles.clearButton} onPress={onClear}>
+            <Text style={styles.clearButtonText}>Clear</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.contractReportBox}>
+        <ReportButton label="Excel" icon="document-text-outline" tone="excel" url={salesExcelUrl} />
+        <ReportButton label="PDF" icon="document-outline" tone="pdf" url={salesPdfUrl} />
+        <Pressable style={styles.mailButton} onPress={() => setMailPanelOpen((value) => !value)}>
+          <Ionicons name="send-outline" size={16} color="#1b2430" />
+          <Text style={styles.mailButtonText}>Send by mail</Text>
+        </Pressable>
+      </View>
+
+      {mailPanelOpen && (
+        <View style={styles.mailPanel}>
+          <Text style={styles.inputLabel}>Recipient Email</Text>
+          <TextInput
+            value={mailAddress}
+            onChangeText={setMailAddress}
+            placeholder="example@email.com"
+            placeholderTextColor="#718397"
+            autoCapitalize="none"
+            keyboardType="email-address"
+            style={styles.input}
+          />
+          {!!savedMails.length && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedMailRow}>
+              {savedMails.map((email) => (
+                <Pressable key={email} style={styles.savedMailChip} onPress={() => setMailAddress(email)}>
+                  <Text style={styles.savedMailText}>{email}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          <Text style={styles.inputLabel}>File Type</Text>
+          <View style={styles.mailFormatRow}>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "xlsx" && styles.mailFormatButtonActiveExcel]}
+              onPress={() => setMailFormat("xlsx")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "xlsx" && styles.mailFormatTextExcel]}>Excel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "pdf" && styles.mailFormatButtonActivePdf]}
+              onPress={() => setMailFormat("pdf")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "pdf" && styles.mailFormatTextPdf]}>PDF</Text>
+            </Pressable>
+          </View>
+          <Pressable style={styles.sendMailConfirm} onPress={sendReportByMail}>
+            <Text style={styles.searchButtonText}>Send</Text>
+          </Pressable>
+        </View>
+      )}
+
       <View style={styles.statsGrid}>
         <StatCard label="Sales Rows" value={formatNumber(summary?.rows)} />
         <StatCard label="Vouchers" value={formatNumber(summary?.vouchers)} />
@@ -516,10 +922,6 @@ function TurnoverView({ summary, rows, destination, search }) {
         <StatCard label="Total Sales" value={formatMoney(summary?.total_sales)} tone="gold" />
         <StatCard label="Total Buying" value={formatMoney(summary?.total_buying)} />
         <StatCard label="Profit" value={formatMoney(summary?.profit)} tone="gold" />
-      </View>
-      <View style={styles.reportGrid}>
-        <ReportButton label="Sales Excel" url={`${API_BASE_URL}/export/sales/${destination}.xlsx${query}`} />
-        <ReportButton label="Sales PDF" url={`${API_BASE_URL}/export/sales/${destination}.pdf${query}`} />
       </View>
       <Section title="Top Hotels">
         {(summary?.top_hotels || []).length ? summary.top_hotels.map((item, index) => (
@@ -547,9 +949,147 @@ function TurnoverView({ summary, rows, destination, search }) {
   );
 }
 
-function ContractSituationView({ summary, rows }) {
+function ContractSituationView({ summary, rows, destination }) {
+  const [filters, setFilters] = useState({ hotel: "", status: "", stars: "" });
+  const [focusedField, setFocusedField] = useState("");
+  const [mailPanelOpen, setMailPanelOpen] = useState(false);
+  const [mailAddress, setMailAddress] = useState("");
+  const [mailFormat, setMailFormat] = useState("xlsx");
+  const [savedMails, setSavedMails] = useState([]);
+  const hotelOptions = uniqueOptionValues(rows.map((row) => row.HOTEL));
+  const statusOptions = uniqueOptionValues(rows.flatMap((row) => [row["HOTEL STATUS"], row.STATUE]));
+  const starOptions = uniqueOptionValues(rows.map((row) => row.STAR), 12);
+  const contractExcelUrl = `${API_BASE_URL}/export/contracts/${destination}.xlsx`;
+  const contractPdfUrl = `${API_BASE_URL}/export/contracts/${destination}.pdf`;
+  const selectedMailUrl = mailFormat === "pdf" ? contractPdfUrl : contractExcelUrl;
+  const filteredRows = rows.filter((row) => {
+    const hotel = textValue(row.HOTEL).toLowerCase();
+    const status = `${textValue(row["HOTEL STATUS"])} ${textValue(row.STATUE)}`.toLowerCase();
+    const stars = textValue(row.STAR).toLowerCase();
+    return (
+      (!filters.hotel.trim() || hotel.includes(filters.hotel.trim().toLowerCase())) &&
+      (!filters.status.trim() || status.includes(filters.status.trim().toLowerCase())) &&
+      (!filters.stars.trim() || stars.includes(filters.stars.trim().toLowerCase()))
+    );
+  });
+  const sendReportByMail = useCallback(() => {
+    const email = mailAddress.trim();
+    if (!email) return;
+    const nextSaved = [email, ...savedMails.filter((item) => item.toLowerCase() !== email.toLowerCase())].slice(0, 8);
+    setSavedMails(nextSaved);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      window.localStorage.setItem("khateeb_report_mails", JSON.stringify(nextSaved));
+    }
+    const subject = encodeURIComponent(`Contracts ${mailFormat.toUpperCase()} Report`);
+    const body = encodeURIComponent(`Hello,\n\nPlease download the ${mailFormat.toUpperCase()} contracts report from this link:\n${selectedMailUrl}`);
+    Linking.openURL(`mailto:${email}?subject=${subject}&body=${body}`);
+  }, [mailAddress, mailFormat, savedMails, selectedMailUrl]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem("khateeb_report_mails") || "[]");
+      if (Array.isArray(stored)) setSavedMails(stored.filter(Boolean).slice(0, 8));
+    } catch {
+      setSavedMails([]);
+    }
+  }, []);
+
   return (
     <>
+      <View style={styles.pricingFiltersBox}>
+        <Text style={styles.inputLabel}>Contracts Search</Text>
+        <SmartSearchField
+          name="hotel"
+          label="Hotel Name"
+          value={filters.hotel}
+          placeholder="Start typing hotel name..."
+          options={hotelOptions}
+          focusedField={focusedField}
+          setFocusedField={setFocusedField}
+          setFilters={setFilters}
+        />
+        <View style={styles.revenueDateGrid}>
+          <SmartSearchField
+            name="status"
+            label="Status"
+            value={filters.status}
+            placeholder="Draft, signed, proposal..."
+            options={statusOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+          />
+          <SmartSearchField
+            name="stars"
+            label="Stars"
+            value={filters.stars}
+            placeholder="All stars"
+            options={starOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            keyboardType="numeric"
+          />
+        </View>
+        <View style={styles.searchActions}>
+          <Pressable style={[styles.clearButton, styles.contractClearButton]} onPress={() => setFilters({ hotel: "", status: "", stars: "" })}>
+            <Text style={styles.clearButtonText}>Clear</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.contractReportBox}>
+        <ReportButton label="Excel" icon="document-text-outline" tone="excel" url={contractExcelUrl} />
+        <ReportButton label="PDF" icon="document-outline" tone="pdf" url={contractPdfUrl} />
+        <Pressable style={styles.mailButton} onPress={() => setMailPanelOpen((value) => !value)}>
+          <Ionicons name="send-outline" size={16} color="#1b2430" />
+          <Text style={styles.mailButtonText}>Send by mail</Text>
+        </Pressable>
+      </View>
+
+      {mailPanelOpen && (
+        <View style={styles.mailPanel}>
+          <Text style={styles.inputLabel}>Recipient Email</Text>
+          <TextInput
+            value={mailAddress}
+            onChangeText={setMailAddress}
+            placeholder="example@email.com"
+            placeholderTextColor="#718397"
+            autoCapitalize="none"
+            keyboardType="email-address"
+            style={styles.input}
+          />
+          {!!savedMails.length && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedMailRow}>
+              {savedMails.map((email) => (
+                <Pressable key={email} style={styles.savedMailChip} onPress={() => setMailAddress(email)}>
+                  <Text style={styles.savedMailText}>{email}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          <Text style={styles.inputLabel}>File Type</Text>
+          <View style={styles.mailFormatRow}>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "xlsx" && styles.mailFormatButtonActiveExcel]}
+              onPress={() => setMailFormat("xlsx")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "xlsx" && styles.mailFormatTextExcel]}>Excel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "pdf" && styles.mailFormatButtonActivePdf]}
+              onPress={() => setMailFormat("pdf")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "pdf" && styles.mailFormatTextPdf]}>PDF</Text>
+            </Pressable>
+          </View>
+          <Pressable style={styles.sendMailConfirm} onPress={sendReportByMail}>
+            <Text style={styles.searchButtonText}>Send</Text>
+          </Pressable>
+        </View>
+      )}
+
       <View style={styles.statsGrid}>
         <StatCard label="Rows" value={formatNumber(summary?.rows)} />
         <StatCard label="Hotels" value={formatNumber(summary?.hotels)} />
@@ -559,7 +1099,7 @@ function ContractSituationView({ summary, rows }) {
         <StatCard label="Proposal" value={formatNumber(summary?.proposal)} />
       </View>
       <Section title="Contract Situation">
-        {rows.length ? rows.map((row, index) => (
+        {filteredRows.length ? filteredRows.map((row, index) => (
           <InfoRow
             key={`${row.HOTEL}-${index}`}
             title={textValue(row.HOTEL)}
@@ -616,14 +1156,135 @@ function AvailabilityView({ data }) {
   );
 }
 
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [loginError, setLoginError] = useState("");
+
+  const submitLogin = useCallback(() => {
+    if (username.trim() === LOGIN_USER && password === LOGIN_PASSWORD) {
+      setLoginError("");
+      onLogin();
+      return;
+    }
+    setLoginError("Invalid username or password");
+  }, [onLogin, password, username]);
+
+  return (
+    <SafeAreaView style={styles.loginExactSafeArea}>
+      <StatusBar style="dark" />
+      <ImageBackground
+        source={require("./assets/login-screen.png")}
+        resizeMode="contain"
+        style={styles.loginExactFrame}
+        imageStyle={styles.loginExactImage}
+      >
+        <TextInput
+          value={username}
+          onChangeText={setUsername}
+          autoCapitalize="none"
+          placeholder=""
+          style={[styles.loginExactInput, styles.loginExactUsername]}
+        />
+        <TextInput
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry={!showPassword}
+          placeholder=""
+          style={[styles.loginExactInput, styles.loginExactPassword]}
+          onSubmitEditing={submitLogin}
+        />
+        <Pressable
+          accessibilityLabel="Show password"
+          style={styles.loginExactEye}
+          onPress={() => setShowPassword((value) => !value)}
+        />
+        <Pressable
+          accessibilityLabel="Remember me"
+          style={styles.loginExactRemember}
+          onPress={() => setRememberMe((value) => !value)}
+        >
+          {rememberMe && <Ionicons name="checkmark" size={14} color="#d8aa43" />}
+        </Pressable>
+        {!!loginError && <Text style={styles.loginExactError}>{loginError}</Text>}
+        <Pressable accessibilityLabel="Login" style={styles.loginExactButton} onPress={submitLogin} />
+        <Pressable accessibilityLabel="Face ID" style={styles.loginExactFace} />
+        <Pressable accessibilityLabel="Fingerprint" style={styles.loginExactFingerprint} />
+      </ImageBackground>
+    </SafeAreaView>
+  );
+}
+
+function DrawerMenu({ activeModule, onNavigate, onClose, onLogout }) {
+  const items = [
+    { label: "Home", icon: "home-outline", module: "dashboard" },
+    { label: "Availability", icon: "calendar-outline", module: "availability" },
+    { label: "Flight", icon: "airplane-outline" },
+    { label: "Alert Center", icon: "notifications-outline", module: "smart" },
+    { label: "Data Center", icon: "server-outline", module: "data" },
+    { label: "Sent Mail", icon: "paper-plane-outline" },
+  ];
+
+  return (
+    <View style={styles.drawerOverlay}>
+      <Pressable style={styles.drawerBackdrop} onPress={onClose} />
+      <View style={styles.drawerPanel}>
+        <View style={styles.drawerProfile}>
+          <View style={styles.drawerAvatar}>
+            <Text style={styles.drawerAvatarText}>ME</Text>
+          </View>
+          <View>
+            <Text style={styles.drawerName}>Mahmoud Elkhateeb</Text>
+            <Text style={styles.drawerRole}>Admin</Text>
+          </View>
+        </View>
+
+        <View style={styles.drawerDivider} />
+
+        <View style={styles.drawerItems}>
+          {items.map((item) => {
+            const active = item.module && activeModule === item.module;
+            return (
+              <Pressable
+                key={item.label}
+                style={[styles.drawerItem, active && styles.drawerItemActive]}
+                onPress={() => item.module && onNavigate(item.module)}
+              >
+                <View style={[styles.drawerIconBox, active && styles.drawerIconBoxActive]}>
+                  <Ionicons name={item.icon} size={22} color={active ? "#d8aa43" : "#ffffff"} />
+                </View>
+                <Text style={[styles.drawerItemText, active && styles.drawerItemTextActive]}>{item.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={styles.drawerDivider} />
+
+        <Pressable style={styles.drawerLogout} onPress={onLogout}>
+          <View style={styles.drawerIconBox}>
+            <Ionicons name="log-out-outline" size={22} color="#ffffff" />
+          </View>
+          <Text style={styles.drawerItemText}>Logout</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 export default function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [destination, setDestination] = useState("hurghada");
   const [module, setModule] = useState("dashboard");
   const [search, setSearch] = useState("");
-  const [dashboardFilters, setDashboardFilters] = useState({ hotel: "", date: "" });
+  const [dashboardFilters, setDashboardFilters] = useState({ hotel: "", dateFrom: "", dateTo: "" });
   const [dashboardSearchVersion, setDashboardSearchVersion] = useState(0);
   const [pricingFilters, setPricingFilters] = useState({
     hotel: "",
+    stars: "",
     dateFrom: "",
     dateTo: "",
     room: "",
@@ -631,6 +1292,8 @@ export default function App() {
     price: "",
   });
   const [pricingSearchVersion, setPricingSearchVersion] = useState(0);
+  const [revenueFilters, setRevenueFilters] = useState({ hotel: "", dateFrom: "", dateTo: "" });
+  const [revenueSearchVersion, setRevenueSearchVersion] = useState(0);
   const [activePricingKpi, setActivePricingKpi] = useState("total_hotels");
   const [payload, setPayload] = useState({});
   const [loading, setLoading] = useState(true);
@@ -643,6 +1306,7 @@ export default function App() {
   );
 
   const loadData = useCallback(async () => {
+    if (!isLoggedIn) return;
     setError("");
     const hotelQuery = search.trim() ? `?hotel=${encodeURIComponent(search.trim())}` : "";
     const next = {};
@@ -652,10 +1316,8 @@ export default function App() {
     } else if (module === "dashboard") {
       const params = [];
       if (dashboardFilters.hotel.trim()) params.push(`hotel=${encodeURIComponent(dashboardFilters.hotel.trim())}`);
-      if (dashboardFilters.date.trim()) {
-        params.push(`date_from=${encodeURIComponent(dashboardFilters.date.trim())}`);
-        params.push(`date_to=${encodeURIComponent(dashboardFilters.date.trim())}`);
-      }
+      if (dashboardFilters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(dashboardFilters.dateFrom.trim())}`);
+      if (dashboardFilters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(dashboardFilters.dateTo.trim())}`);
       params.push("kpi=total_hotels");
       params.push("limit=20");
       const query = `?${params.join("&")}`;
@@ -672,6 +1334,7 @@ export default function App() {
     } else if (module === "pricing") {
       const params = [];
       if (pricingFilters.hotel.trim()) params.push(`hotel=${encodeURIComponent(pricingFilters.hotel.trim())}`);
+      if (pricingFilters.stars.trim()) params.push(`stars=${encodeURIComponent(pricingFilters.stars.trim())}`);
       if (pricingFilters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(pricingFilters.dateFrom.trim())}`);
       if (pricingFilters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(pricingFilters.dateTo.trim())}`);
       if (pricingFilters.room.trim()) params.push(`room=${encodeURIComponent(pricingFilters.room.trim())}`);
@@ -680,14 +1343,27 @@ export default function App() {
       params.push("kpi=total_hotels");
       params.push("limit=220");
       const query = `?${params.join("&")}`;
-      next.pricingDashboard = await getJson(`/pricing/${destination}/dashboard${query}`);
+      const [pricingDashboard, hotels] = await Promise.all([
+        getJson(`/pricing/${destination}/dashboard${query}`),
+        getJson(`/hotels/${destination}`),
+      ]);
+      next.pricingDashboard = pricingDashboard;
+      next.hotels = hotels;
     } else if (module === "turnover") {
-      const [summary, rows] = await Promise.all([
-        getJson(`/sales/${destination}/summary${hotelQuery}`),
-        getJson(`/sales/${destination}${hotelQuery ? `${hotelQuery}&limit=120` : "?limit=120"}`),
+      const params = [];
+      if (revenueFilters.hotel.trim()) params.push(`hotel=${encodeURIComponent(revenueFilters.hotel.trim())}`);
+      if (revenueFilters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(revenueFilters.dateFrom.trim())}`);
+      if (revenueFilters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(revenueFilters.dateTo.trim())}`);
+      const query = params.length ? `?${params.join("&")}` : "";
+      const rowsQuery = params.length ? `${query}&limit=120` : "?limit=120";
+      const [summary, rows, hotels] = await Promise.all([
+        getJson(`/sales/${destination}/summary${query}`),
+        getJson(`/sales/${destination}${rowsQuery}`),
+        getJson(`/hotels/${destination}`),
       ]);
       next.summary = summary;
       next.rows = rows;
+      next.hotels = hotels;
     } else if (module === "contracts") {
       const [summary, rows] = await Promise.all([
         getJson("/contract-situation/summary"),
@@ -704,15 +1380,22 @@ export default function App() {
     setPayload(next);
   }, [
     destination,
+    isLoggedIn,
     module,
     search,
     dashboardFilters,
     dashboardSearchVersion,
     pricingFilters,
     pricingSearchVersion,
+    revenueFilters,
+    revenueSearchVersion,
   ]);
 
   useEffect(() => {
+    if (!isLoggedIn) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     loadData()
       .catch((err) => setError(err.message))
@@ -733,6 +1416,13 @@ export default function App() {
   const runDashboardSearch = useCallback(() => {
     setDashboardSearchVersion((value) => value + 1);
   }, []);
+  const runRevenueSearch = useCallback(() => {
+    setRevenueSearchVersion((value) => value + 1);
+  }, []);
+
+  if (!isLoggedIn) {
+    return <LoginScreen onLogin={() => setIsLoggedIn(true)} />;
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -742,7 +1432,7 @@ export default function App() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#f8d77a" />}
       >
         <View style={styles.header}>
-          <Pressable style={styles.iconButton}>
+          <Pressable style={styles.iconButton} onPress={() => setIsDrawerOpen(true)}>
             <Ionicons name="menu-outline" size={24} color="#dbe3ea" />
           </Pressable>
           <View>
@@ -765,7 +1455,7 @@ export default function App() {
           ))}
         </ScrollView>
 
-        {module !== "pricing" && module !== "dashboard" && (
+        {module !== "pricing" && module !== "dashboard" && module !== "turnover" && module !== "contracts" && (
           <View style={styles.searchPanel}>
             <Text style={styles.inputLabel}>{activeModuleLabel} Search</Text>
             <TextInput
@@ -802,7 +1492,7 @@ export default function App() {
                 setFilters={setDashboardFilters}
                 onSearch={runDashboardSearch}
                 onClear={() => {
-                  setDashboardFilters({ hotel: "", date: "" });
+                  setDashboardFilters({ hotel: "", dateFrom: "", dateTo: "" });
                   setDashboardSearchVersion((value) => value + 1);
                 }}
               />
@@ -810,19 +1500,34 @@ export default function App() {
             {module === "pricing" && (
               <PricingView
                 dashboard={payload.pricingDashboard}
+                hotelOptions={payload.hotels?.hotels || []}
                 destination={destination}
                 filters={pricingFilters}
                 setFilters={setPricingFilters}
                 onSearch={runPricingSearch}
                 onClear={() => {
-                  setPricingFilters({ hotel: "", dateFrom: "", dateTo: "", room: "", board: "", price: "" });
+                  setPricingFilters({ hotel: "", stars: "", dateFrom: "", dateTo: "", room: "", board: "", price: "" });
                   setActivePricingKpi("total_hotels");
                   setPricingSearchVersion((value) => value + 1);
                 }}
               />
             )}
-            {module === "turnover" && <TurnoverView summary={payload.summary} rows={filteredRows} destination={destination} search={search} />}
-            {module === "contracts" && <ContractSituationView summary={payload.summary} rows={filteredRows} />}
+            {module === "turnover" && (
+              <TurnoverView
+                summary={payload.summary}
+                rows={payload.rows || []}
+                destination={destination}
+                hotelOptions={payload.hotels?.hotels || []}
+                filters={revenueFilters}
+                setFilters={setRevenueFilters}
+                onSearch={runRevenueSearch}
+                onClear={() => {
+                  setRevenueFilters({ hotel: "", dateFrom: "", dateTo: "" });
+                  setRevenueSearchVersion((value) => value + 1);
+                }}
+              />
+            )}
+            {module === "contracts" && <ContractSituationView summary={payload.summary} rows={filteredRows} destination={destination} />}
             {module === "data" && <DataCenterView data={payload.data} />}
             {module === "availability" && <AvailabilityView data={payload.data} />}
           </>
@@ -839,11 +1544,435 @@ export default function App() {
           />
         ))}
       </View>
+      {isDrawerOpen && (
+        <DrawerMenu
+          activeModule={module}
+          onClose={() => setIsDrawerOpen(false)}
+          onNavigate={(nextModule) => {
+            setModule(nextModule);
+            setIsDrawerOpen(false);
+          }}
+          onLogout={() => {
+            setIsDrawerOpen(false);
+            setIsLoggedIn(false);
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  loginExactSafeArea: {
+    flex: 1,
+    backgroundColor: "#000000",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginExactFrame: {
+    height: "100%",
+    maxHeight: 1096,
+    maxWidth: Platform.OS === "web" ? 430 : undefined,
+    aspectRatio: 518 / 1096,
+    alignSelf: "center",
+  },
+  loginExactImage: {
+    width: "100%",
+    height: "100%",
+  },
+  loginExactInput: {
+    position: "absolute",
+    left: "20%",
+    width: "63%",
+    height: "4.7%",
+    color: "#eef4f8",
+    fontFamily: APP_FONT,
+    fontSize: 15,
+    fontWeight: "400",
+    paddingVertical: 0,
+    outlineStyle: "none",
+    backgroundColor: "transparent",
+  },
+  loginExactUsername: {
+    top: "50.2%",
+  },
+  loginExactPassword: {
+    top: "60.3%",
+  },
+  loginExactEye: {
+    position: "absolute",
+    left: "81.5%",
+    top: "61.1%",
+    width: "7%",
+    height: "3.7%",
+  },
+  loginExactRemember: {
+    position: "absolute",
+    left: "9.3%",
+    top: "67%",
+    width: "5%",
+    height: "2.5%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginExactError: {
+    position: "absolute",
+    left: "9.5%",
+    top: "70.1%",
+    width: "81%",
+    color: "#ffb3a8",
+    fontFamily: APP_FONT,
+    fontSize: 12,
+    textAlign: "center",
+  },
+  loginExactButton: {
+    position: "absolute",
+    left: "9.3%",
+    top: "71.2%",
+    width: "82.5%",
+    height: "5.7%",
+  },
+  loginExactFace: {
+    position: "absolute",
+    left: "9.2%",
+    top: "81.9%",
+    width: "39.8%",
+    height: "10.6%",
+  },
+  loginExactFingerprint: {
+    position: "absolute",
+    left: "51.4%",
+    top: "81.9%",
+    width: "39.9%",
+    height: "10.6%",
+  },
+  loginSafeArea: {
+    flex: 1,
+    backgroundColor: "#f4efe5",
+    alignItems: "center",
+  },
+  loginScene: {
+    flex: 1,
+    width: "100%",
+    maxWidth: Platform.OS === "web" ? 430 : undefined,
+    backgroundColor: "#f4efe5",
+    overflow: "hidden",
+  },
+  loginSky: {
+    minHeight: 330,
+    alignItems: "center",
+    paddingTop: 28,
+    paddingHorizontal: 22,
+    backgroundColor: "#fbfaf7",
+  },
+  loginBell: {
+    position: "absolute",
+    right: 24,
+    top: 28,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginLogo: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 1,
+    borderColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 18,
+    marginBottom: 10,
+  },
+  loginLogoText: {
+    fontFamily: APP_FONT,
+    color: "#d8aa43",
+    fontSize: 21,
+    fontWeight: "300",
+  },
+  loginBrand: {
+    fontFamily: APP_FONT,
+    color: "#172635",
+    fontSize: 15,
+    fontWeight: "600",
+    marginBottom: 28,
+  },
+  loginWelcome: {
+    fontFamily: APP_FONT,
+    color: "#172635",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  loginSub: {
+    fontFamily: APP_FONT,
+    color: "#465566",
+    fontSize: 12,
+    marginTop: 4,
+  },
+  loginWater: {
+    flex: 1,
+    marginTop: -72,
+    backgroundColor: "#132332",
+    borderTopLeftRadius: 36,
+    borderTopRightRadius: 36,
+    paddingTop: 34,
+    paddingHorizontal: 18,
+  },
+  loginPanel: {
+    width: "100%",
+  },
+  loginLabel: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    fontSize: 11,
+    fontWeight: "600",
+    marginBottom: 6,
+    marginTop: 10,
+  },
+  loginInput: {
+    fontFamily: APP_FONT,
+    height: 42,
+    borderRadius: 7,
+    backgroundColor: "#f7fafc",
+    color: "#172635",
+    paddingHorizontal: 12,
+    fontSize: 13,
+    outlineStyle: "none",
+  },
+  loginPasswordWrap: {
+    height: 42,
+    borderRadius: 7,
+    backgroundColor: "#f7fafc",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingLeft: 12,
+  },
+  loginPasswordInput: {
+    fontFamily: APP_FONT,
+    flex: 1,
+    color: "#172635",
+    fontSize: 13,
+    outlineStyle: "none",
+  },
+  loginEye: {
+    width: 38,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginOptions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 12,
+  },
+  loginRemember: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  loginCheck: {
+    width: 14,
+    height: 14,
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginCheckActive: {
+    backgroundColor: "#d8aa43",
+  },
+  loginOptionText: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    fontSize: 11,
+  },
+  loginForgot: {
+    fontFamily: APP_FONT,
+    color: "#d8aa43",
+    fontSize: 11,
+  },
+  loginError: {
+    fontFamily: APP_FONT,
+    color: "#ffb3a8",
+    fontSize: 12,
+    marginTop: 10,
+  },
+  loginButton: {
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 14,
+  },
+  loginButtonText: {
+    fontFamily: APP_FONT,
+    color: "#172635",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  loginDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginVertical: 18,
+  },
+  loginDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: "rgba(231, 238, 245, 0.18)",
+  },
+  loginDividerText: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    fontSize: 11,
+  },
+  loginBiometricRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  loginBioButton: {
+    flex: 1,
+    height: 58,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(231, 238, 245, 0.13)",
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+  loginBioText: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    fontSize: 11,
+  },
+  loginFooter: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    textAlign: "center",
+    fontSize: 11,
+    marginTop: 22,
+  },
+  drawerOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 50,
+    flexDirection: "row",
+  },
+  drawerBackdrop: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: "rgba(7, 12, 18, 0.36)",
+  },
+  drawerPanel: {
+    width: "72%",
+    maxWidth: 310,
+    marginTop: 10,
+    marginLeft: 10,
+    borderRadius: 16,
+    backgroundColor: "#111a26",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+    paddingHorizontal: 16,
+    paddingTop: 20,
+    paddingBottom: 18,
+    shadowColor: "#000000",
+    shadowOpacity: 0.32,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 18 },
+    elevation: 12,
+  },
+  drawerProfile: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  drawerAvatar: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  drawerAvatarText: {
+    fontFamily: APP_FONT,
+    color: "#ffffff",
+    fontSize: 24,
+    fontWeight: "800",
+  },
+  drawerName: {
+    fontFamily: APP_FONT,
+    color: "#f4f7fb",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  drawerRole: {
+    fontFamily: APP_FONT,
+    color: "#aab3bf",
+    fontSize: 12,
+    marginTop: 3,
+    fontWeight: "500",
+  },
+  drawerDivider: {
+    height: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    marginVertical: 16,
+  },
+  drawerItems: {
+    gap: 8,
+  },
+  drawerItem: {
+    minHeight: 50,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 6,
+  },
+  drawerItemActive: {
+    backgroundColor: "#17253a",
+    borderWidth: 1,
+    borderColor: "rgba(216, 170, 67, 0.10)",
+  },
+  drawerIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 11,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  drawerIconBoxActive: {
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+  },
+  drawerItemText: {
+    fontFamily: APP_FONT,
+    color: "#f4f7fb",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  drawerItemTextActive: {
+    color: "#d8aa43",
+  },
+  drawerLogout: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 6,
+  },
   safeArea: {
     flex: 1,
     backgroundColor: "#f5f1e8",
@@ -1010,15 +2139,25 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   suggestionBox: {
-    marginTop: 6,
+    position: "absolute",
+    top: 74,
+    left: 0,
+    right: 0,
+    zIndex: 30,
+    maxHeight: 88,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "rgba(27, 36, 48, 0.08)",
     backgroundColor: "#ffffff",
     overflow: "hidden",
+    shadowColor: "#000000",
+    shadowOpacity: 0.10,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
   },
   suggestionItem: {
-    minHeight: 38,
+    minHeight: 30,
     justifyContent: "center",
     paddingHorizontal: 12,
     borderTopWidth: 1,
@@ -1032,11 +2171,12 @@ const styles = StyleSheet.create({
   searchActions: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 12,
+    marginTop: 16,
+    marginBottom: 2,
   },
   searchButton: {
     flex: 1,
-    height: 46,
+    height: 44,
     borderRadius: 12,
     backgroundColor: "#d8aa43",
     borderWidth: 1,
@@ -1051,7 +2191,7 @@ const styles = StyleSheet.create({
   },
   clearButton: {
     minWidth: 96,
-    height: 46,
+    height: 44,
     borderRadius: 12,
     backgroundColor: "#ffffff",
     borderWidth: 1,
@@ -1063,6 +2203,11 @@ const styles = StyleSheet.create({
     fontFamily: APP_FONT,
     color: "#d8aa43",
     fontWeight: "300",
+  },
+  contractClearButton: {
+    flexGrow: 0,
+    minWidth: 120,
+    alignSelf: "flex-start",
   },
   inputLabel: {
     fontFamily: APP_FONT,
@@ -1178,6 +2323,50 @@ const styles = StyleSheet.create({
     color: "#1b2430",
     fontWeight: "300",
     outlineStyle: "none",
+  },
+  pricingTopSuggestions: {
+    marginTop: -4,
+    marginBottom: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    overflow: "hidden",
+  },
+  pricingFiltersBox: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 16,
+    marginBottom: 14,
+  },
+  pricingFiltersGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  pricingFilterField: {
+    flexGrow: 1,
+    flexBasis: "47%",
+    minWidth: 142,
+    position: "relative",
+    zIndex: 4,
+  },
+  pricingFilterFieldFull: {
+    flexBasis: "auto",
+    width: "100%",
+    minWidth: 0,
+    alignSelf: "stretch",
+    marginBottom: 10,
+  },
+  revenueDateGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 10,
   },
   filterChipsRow: {
     gap: 8,
@@ -1658,13 +2847,123 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(248, 215, 122, 0.35)",
     backgroundColor: "rgba(248, 215, 122, 0.08)",
+    flexDirection: "row",
+    gap: 6,
     alignItems: "center",
     justifyContent: "center",
+  },
+  reportButton_excel: {
+    borderColor: "rgba(21, 115, 71, 0.28)",
+    backgroundColor: "rgba(21, 115, 71, 0.08)",
+  },
+  reportButton_pdf: {
+    borderColor: "rgba(192, 57, 43, 0.28)",
+    backgroundColor: "rgba(192, 57, 43, 0.08)",
   },
   reportButtonText: {
     fontFamily: APP_FONT,
     color: "#f8d77a",
     fontWeight: "300",
+  },
+  reportButtonText_excel: {
+    color: "#157347",
+  },
+  reportButtonText_pdf: {
+    color: "#c0392b",
+  },
+  contractReportBox: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 14,
+  },
+  mailButton: {
+    flexGrow: 1,
+    flexBasis: "100%",
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(216, 170, 67, 0.28)",
+    backgroundColor: "rgba(216, 170, 67, 0.12)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+  mailButtonText: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontWeight: "400",
+  },
+  mailPanel: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    padding: 12,
+    gap: 10,
+    marginTop: 2,
+    marginBottom: 14,
+  },
+  savedMailRow: {
+    gap: 8,
+    paddingVertical: 2,
+  },
+  savedMailChip: {
+    minHeight: 30,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(216, 170, 67, 0.25)",
+    backgroundColor: "rgba(216, 170, 67, 0.08)",
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  savedMailText: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 12,
+  },
+  mailFormatRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  mailFormatButton: {
+    flex: 1,
+    height: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#f8f8f6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mailFormatButtonActiveExcel: {
+    borderColor: "rgba(21, 115, 71, 0.35)",
+    backgroundColor: "rgba(21, 115, 71, 0.10)",
+  },
+  mailFormatButtonActivePdf: {
+    borderColor: "rgba(192, 57, 43, 0.35)",
+    backgroundColor: "rgba(192, 57, 43, 0.10)",
+  },
+  mailFormatText: {
+    fontFamily: APP_FONT,
+    color: "#718397",
+    fontWeight: "400",
+  },
+  mailFormatTextExcel: {
+    color: "#157347",
+  },
+  mailFormatTextPdf: {
+    color: "#c0392b",
+  },
+  sendMailConfirm: {
+    height: 42,
+    borderRadius: 10,
+    backgroundColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
   },
   emptyBox: {
     minHeight: 74,

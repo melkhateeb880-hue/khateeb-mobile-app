@@ -1,1 +1,8 @@
 
+node_modules/
+.expo/
+dist/
+*.log
+*.backup_*
+.env
+.env.local

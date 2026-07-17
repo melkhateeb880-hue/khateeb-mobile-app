@@ -15,17 +15,7 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-
-const LAN_API_HOST = "172.20.10.3";
-const WEB_API_HOST =
-  Platform.OS === "web" &&
-  typeof window !== "undefined" &&
-  !["localhost", "127.0.0.1"].includes(window.location.hostname)
-    ? window.location.hostname
-    : "127.0.0.1";
-const API_HOST = Platform.OS === "web" ? WEB_API_HOST : LAN_API_HOST;
-const LOCAL_API_BASE_URL = `http://${API_HOST}:8007`;
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || LOCAL_API_BASE_URL;
+import { API_BASE_URL, apiGet, queryString } from "./api";
 const APP_FONT = Platform.OS === "web" ? "Segoe UI Light, Segoe UI, Arial" : "sans-serif-light";
 const LOGIN_USER = "admin";
 const LOGIN_PASSWORD = "Rahim159357";
@@ -39,10 +29,14 @@ const MODULES = [
   { key: "dashboard", label: "Home" },
   { key: "pricing", label: "Pricing" },
   { key: "turnover", label: "Revenue" },
-  { key: "contracts", label: "Contracts" },
+  { key: "contracts", label: "Contract Situation" },
   { key: "smart", label: "Tasks" },
-  { key: "data", label: "Data Center" },
   { key: "availability", label: "Availability" },
+  { key: "inhouse", label: "Inhouse" },
+  { key: "stopsale", label: "Stop Sale" },
+  { key: "target", label: "Target" },
+  { key: "flight", label: "Flight Intelligence" },
+  { key: "data", label: "Data Center / Reports" },
 ];
 
 const MAIN_TABS = MODULES.slice(0, 5);
@@ -88,14 +82,6 @@ function uniqueOptionValues(values, limit = 80) {
     options.push(option);
   });
   return options.sort((a, b) => a.localeCompare(b)).slice(0, limit);
-}
-
-async function getJson(path) {
-  const response = await fetch(`${API_BASE_URL}${path}`);
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
-  return response.json();
 }
 
 function Pill({ active, label, onPress }) {
@@ -1156,6 +1142,169 @@ function AvailabilityView({ data }) {
   );
 }
 
+const OVERVIEW_LABELS = {
+  rooms: "Rooms",
+  hotels: "Hotels",
+  rows: "Rows",
+  rules: "Rules",
+  active_now: "Active Now",
+  upcoming: "Upcoming",
+  expired: "Expired",
+  full_blocks: "Full Blocks",
+  commitment: "Commitment",
+  achieved: "Achieved",
+  difference: "Difference",
+  achievement: "Achievement %",
+  flights: "Flights",
+  allocated: "Allocated Seats",
+  sold: "Sold Seats",
+  empty: "Empty Seats",
+  load_factor: "Load Factor %",
+  full_flights: "Full Flights",
+  low_load_flights: "Low Load",
+};
+
+function overviewRowText(row, type) {
+  if (type === "flight") {
+    return {
+      title: `${textValue(row.flight_number)} • ${textValue(row.flight_date)}`,
+      subtitle: `${textValue(row.departure_city || row.origin_city)} → ${textValue(row.destination_name || row.destination_city)} • ${textValue(row.market)}`,
+      right: `${formatNumber(row.sold_seats)}/${formatNumber(row.seats)}`,
+    };
+  }
+  if (type === "stopsale") {
+    return {
+      title: textValue(row.hotel_name || row.Hotel),
+      subtitle: `${textValue(row.Status)} • ${textValue(row.begin_date)} → ${textValue(row.end_date)} • ${textValue(row.explanation)}`,
+      right: textValue(row.operator),
+    };
+  }
+  if (type === "target") {
+    return {
+      title: textValue(row.Hotel),
+      subtitle: `${textValue(row.Month)} • Commitment ${formatNumber(row.Commitment)} • Achieved ${formatNumber(row.Achieved)}`,
+      right: `${Number(row["Achievement %"] || 0).toFixed(1)}%`,
+    };
+  }
+  return {
+    title: textValue(row.Hotel || row.hotel || row["Hotel Name"]),
+    subtitle: `${textValue(row.Date || row.date)} • ${textValue(row.Destination || row.Region)} • ${formatNumber(row.Rooms)} rooms`,
+    right: textValue(row.Month),
+  };
+}
+
+function OperationalOverviewView({ data, type, title }) {
+  const kpis = data?.kpis || {};
+  const rows = data?.rows || [];
+  const visibleKpis = Object.entries(kpis).filter(([key, value]) => key !== "as_of" && key !== "month" && value !== null);
+  return (
+    <>
+      <View style={styles.statsGrid}>
+        {visibleKpis.map(([key, value]) => (
+          <StatCard
+            key={key}
+            label={OVERVIEW_LABELS[key] || key.replaceAll("_", " ")}
+            value={typeof value === "number" ? formatNumber(value) : textValue(value)}
+            tone={["active_now", "achieved", "sold", "load_factor"].includes(key) ? "gold" : "normal"}
+          />
+        ))}
+      </View>
+      <Section title={title}>
+        {!rows.length ? (
+          <EmptyState message={`No ${title.toLowerCase()} data matches the current filters.`} />
+        ) : (
+          rows.map((row, index) => {
+            const item = overviewRowText(row, type);
+            return (
+              <InfoRow
+                key={`${item.title}-${index}`}
+                title={item.title}
+                subtitle={item.subtitle}
+                right={item.right}
+                accent={type === "stopsale" && row.Status === "Active Now"}
+              />
+            );
+          })
+        )}
+      </Section>
+    </>
+  );
+}
+
+function LiveLoginStatusBar() {
+  const [now, setNow] = useState(() => new Date());
+  const [online, setOnline] = useState(() =>
+    Platform.OS === "web" && typeof navigator !== "undefined" ? navigator.onLine : true
+  );
+  const [batteryLevel, setBatteryLevel] = useState(null);
+  const [charging, setCharging] = useState(false);
+
+  useEffect(() => {
+    const clock = setInterval(() => setNow(new Date()), 30000);
+    if (Platform.OS !== "web" || typeof window === "undefined") {
+      return () => clearInterval(clock);
+    }
+
+    const updateOnline = () => setOnline(navigator.onLine);
+    window.addEventListener("online", updateOnline);
+    window.addEventListener("offline", updateOnline);
+
+    let battery;
+    const updateBattery = () => {
+      setBatteryLevel(battery ? Math.round(battery.level * 100) : null);
+      setCharging(Boolean(battery?.charging));
+    };
+    if (typeof navigator.getBattery === "function") {
+      navigator.getBattery().then((value) => {
+        battery = value;
+        updateBattery();
+        battery.addEventListener("levelchange", updateBattery);
+        battery.addEventListener("chargingchange", updateBattery);
+      }).catch(() => {});
+    }
+
+    return () => {
+      clearInterval(clock);
+      window.removeEventListener("online", updateOnline);
+      window.removeEventListener("offline", updateOnline);
+      battery?.removeEventListener("levelchange", updateBattery);
+      battery?.removeEventListener("chargingchange", updateBattery);
+    };
+  }, []);
+
+  const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
+  return (
+    <View style={styles.loginLiveStatusBar}>
+      <Text style={styles.loginLiveTime}>{time}</Text>
+      <View style={styles.loginLiveIndicators}>
+        <View style={styles.loginSignalBars}>
+          {[5, 8, 11, 14].map((height, index) => (
+            <View
+              key={height}
+              style={[styles.loginSignalBar, { height, opacity: online || index === 0 ? 1 : 0.25 }]}
+            />
+          ))}
+        </View>
+        <Ionicons name={online ? "wifi" : "wifi-outline"} size={18} color="#0b1117" />
+        <View style={styles.loginBatteryShell}>
+          <View
+            style={[
+              styles.loginBatteryFill,
+              {
+                width: `${Math.max(8, batteryLevel ?? 72)}%`,
+                backgroundColor: charging ? "#2f9e59" : "#0b1117",
+              },
+            ]}
+          />
+        </View>
+        <View style={styles.loginBatteryTip} />
+        {batteryLevel !== null && <Text style={styles.loginBatteryText}>{batteryLevel}%</Text>}
+      </View>
+    </View>
+  );
+}
+
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -1176,11 +1325,12 @@ function LoginScreen({ onLogin }) {
     <SafeAreaView style={styles.loginExactSafeArea}>
       <StatusBar style="dark" />
       <ImageBackground
-        source={require("./assets/login-screen.png")}
+        source={require("./assets/login-screen-no-biometric.png")}
         resizeMode="contain"
         style={styles.loginExactFrame}
         imageStyle={styles.loginExactImage}
       >
+        <LiveLoginStatusBar />
         <TextInput
           value={username}
           onChangeText={setUsername}
@@ -1210,8 +1360,6 @@ function LoginScreen({ onLogin }) {
         </Pressable>
         {!!loginError && <Text style={styles.loginExactError}>{loginError}</Text>}
         <Pressable accessibilityLabel="Login" style={styles.loginExactButton} onPress={submitLogin} />
-        <Pressable accessibilityLabel="Face ID" style={styles.loginExactFace} />
-        <Pressable accessibilityLabel="Fingerprint" style={styles.loginExactFingerprint} />
       </ImageBackground>
     </SafeAreaView>
   );
@@ -1221,10 +1369,13 @@ function DrawerMenu({ activeModule, onNavigate, onClose, onLogout }) {
   const items = [
     { label: "Home", icon: "home-outline", module: "dashboard" },
     { label: "Availability", icon: "calendar-outline", module: "availability" },
-    { label: "Flight", icon: "airplane-outline" },
+    { label: "Inhouse", icon: "bed-outline", module: "inhouse" },
+    { label: "Stop Sale", icon: "ban-outline", module: "stopsale" },
+    { label: "Target", icon: "speedometer-outline", module: "target" },
+    { label: "Flight Intelligence", icon: "airplane-outline", module: "flight" },
+    { label: "Contract Situation", icon: "document-text-outline", module: "contracts" },
     { label: "Alert Center", icon: "notifications-outline", module: "smart" },
-    { label: "Data Center", icon: "server-outline", module: "data" },
-    { label: "Sent Mail", icon: "paper-plane-outline" },
+    { label: "Data Center / Reports", icon: "server-outline", module: "data" },
   ];
 
   return (
@@ -1312,7 +1463,7 @@ export default function App() {
     const next = {};
 
     if (module === "smart") {
-      next.smart = await getJson(`/smart-tasks/${destination}`);
+      next.smart = await apiGet(`/smart-tasks/${destination}`);
     } else if (module === "dashboard") {
       const params = [];
       if (dashboardFilters.hotel.trim()) params.push(`hotel=${encodeURIComponent(dashboardFilters.hotel.trim())}`);
@@ -1322,10 +1473,10 @@ export default function App() {
       params.push("limit=20");
       const query = `?${params.join("&")}`;
       const [pricingDashboard, hotels, contractSummary, inhouseSummary] = await Promise.all([
-        getJson(`/pricing/${destination}/dashboard${query}`),
-        getJson(`/hotels/${destination}`),
-        getJson("/contract-situation/summary"),
-        getJson("/inhouse/summary"),
+        apiGet(`/pricing/${destination}/dashboard${query}`),
+        apiGet(`/hotels/${destination}`),
+        apiGet(`/contract-situation/summary?destination=${destination}`),
+        apiGet("/inhouse/summary"),
       ]);
       next.pricingDashboard = pricingDashboard;
       next.hotels = hotels;
@@ -1344,8 +1495,8 @@ export default function App() {
       params.push("limit=220");
       const query = `?${params.join("&")}`;
       const [pricingDashboard, hotels] = await Promise.all([
-        getJson(`/pricing/${destination}/dashboard${query}`),
-        getJson(`/hotels/${destination}`),
+        apiGet(`/pricing/${destination}/dashboard${query}`),
+        apiGet(`/hotels/${destination}`),
       ]);
       next.pricingDashboard = pricingDashboard;
       next.hotels = hotels;
@@ -1357,24 +1508,32 @@ export default function App() {
       const query = params.length ? `?${params.join("&")}` : "";
       const rowsQuery = params.length ? `${query}&limit=120` : "?limit=120";
       const [summary, rows, hotels] = await Promise.all([
-        getJson(`/sales/${destination}/summary${query}`),
-        getJson(`/sales/${destination}${rowsQuery}`),
-        getJson(`/hotels/${destination}`),
+        apiGet(`/sales/${destination}/summary${query}`),
+        apiGet(`/sales/${destination}${rowsQuery}`),
+        apiGet(`/hotels/${destination}`),
       ]);
       next.summary = summary;
       next.rows = rows;
       next.hotels = hotels;
     } else if (module === "contracts") {
       const [summary, rows] = await Promise.all([
-        getJson("/contract-situation/summary"),
-        getJson("/contract-situation?limit=160"),
+        apiGet(`/contract-situation/summary?destination=${destination}`),
+        apiGet(`/contract-situation?destination=${destination}&limit=160`),
       ]);
       next.summary = summary;
       next.rows = rows;
     } else if (module === "data") {
-      next.data = await getJson("/data-center");
+      next.data = await apiGet("/data-center");
     } else if (module === "availability") {
-      next.data = await getJson(`/availability/${destination}?limit=160`);
+      next.data = await apiGet(`/availability/${destination}?limit=160`);
+    } else if (module === "inhouse") {
+      next.data = await apiGet(`/inhouse/overview${queryString({ hotel: search, limit: 180 })}`);
+    } else if (module === "stopsale") {
+      next.data = await apiGet(`/stopsale/overview${queryString({ hotel: search, limit: 180 })}`);
+    } else if (module === "target") {
+      next.data = await apiGet("/target/overview?limit=180");
+    } else if (module === "flight") {
+      next.data = await apiGet(`/flight-intelligence/overview${queryString({ destination, limit: 180 })}`);
     }
 
     setPayload(next);
@@ -1530,6 +1689,10 @@ export default function App() {
             {module === "contracts" && <ContractSituationView summary={payload.summary} rows={filteredRows} destination={destination} />}
             {module === "data" && <DataCenterView data={payload.data} />}
             {module === "availability" && <AvailabilityView data={payload.data} />}
+            {module === "inhouse" && <OperationalOverviewView data={payload.data} type="inhouse" title="Inhouse" />}
+            {module === "stopsale" && <OperationalOverviewView data={payload.data} type="stopsale" title="Stop Sale" />}
+            {module === "target" && <OperationalOverviewView data={payload.data} type="target" title="Target Achievement" />}
+            {module === "flight" && <OperationalOverviewView data={payload.data} type="flight" title="Flight Intelligence" />}
           </>
         )}
       </ScrollView>
@@ -1579,6 +1742,69 @@ const styles = StyleSheet.create({
   loginExactImage: {
     width: "100%",
     height: "100%",
+  },
+  loginLiveStatusBar: {
+    position: "absolute",
+    top: "0.5%",
+    left: "2%",
+    width: "96%",
+    height: "6.2%",
+    paddingHorizontal: "7.5%",
+    backgroundColor: "#f8f6f3",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    zIndex: 5,
+  },
+  loginLiveTime: {
+    color: "#0b1117",
+    fontFamily: APP_FONT,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  loginLiveIndicators: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  loginSignalBars: {
+    height: 15,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 2,
+  },
+  loginSignalBar: {
+    width: 3,
+    borderRadius: 2,
+    backgroundColor: "#0b1117",
+  },
+  loginBatteryShell: {
+    width: 24,
+    height: 12,
+    padding: 2,
+    borderWidth: 1.5,
+    borderColor: "#0b1117",
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  loginBatteryFill: {
+    height: "100%",
+    borderRadius: 1,
+  },
+  loginBatteryTip: {
+    width: 2,
+    height: 5,
+    marginLeft: -5,
+    borderRadius: 1,
+    backgroundColor: "#0b1117",
+  },
+  loginBatteryText: {
+    color: "#0b1117",
+    fontFamily: APP_FONT,
+    fontSize: 10,
+    fontWeight: "600",
   },
   loginExactInput: {
     position: "absolute",
@@ -1631,20 +1857,6 @@ const styles = StyleSheet.create({
     top: "71.2%",
     width: "82.5%",
     height: "5.7%",
-  },
-  loginExactFace: {
-    position: "absolute",
-    left: "9.2%",
-    top: "81.9%",
-    width: "39.8%",
-    height: "10.6%",
-  },
-  loginExactFingerprint: {
-    position: "absolute",
-    left: "51.4%",
-    top: "81.9%",
-    width: "39.9%",
-    height: "10.6%",
   },
   loginSafeArea: {
     flex: 1,

@@ -1,0 +1,18 @@
+{
+  "name": "Khateeb",
+  "short_name": "Khateeb",
+  "description": "Mobile revenue control dashboards and operational intelligence.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4efe5",
+  "theme_color": "#d8aa43",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/app-icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

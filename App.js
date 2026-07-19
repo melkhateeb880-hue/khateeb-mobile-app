@@ -1,0 +1,3221 @@
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  ImageBackground,
+  Linking,
+  Platform,
+  Pressable,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { StatusBar } from "expo-status-bar";
+import { Ionicons } from "@expo/vector-icons";
+import { API_BASE_URL, apiGet, apiLogin, apiLogout, queryString } from "./services/api";
+const APP_FONT = Platform.OS === "web" ? "Segoe UI Light, Segoe UI, Arial" : "sans-serif-light";
+
+const DESTINATIONS = [
+  { key: "hurghada", label: "Hurghada" },
+  { key: "sharm", label: "Sharm" },
+];
+
+const MODULES = [
+  { key: "dashboard", label: "Home", permission: "dashboard", icon: "home-outline" },
+  { key: "availability", label: "Availability", permission: "availability_monitor", icon: "calendar-outline" },
+  { key: "flight", label: "Flight Intelligence", permission: "flight_intelligence", icon: "airplane-outline" },
+  { key: "smart", label: "Smart Tasks", permission: "smart_tasks", icon: "checkmark-circle-outline" },
+  { key: "alerts", label: "Alerts", permission: "smart_tasks", icon: "notifications-outline" },
+  { key: "data", label: "Data Center", permission: "data_hub", icon: "server-outline" },
+  { key: "profile", label: "Profile", icon: "person-outline" },
+];
+
+const MAIN_TABS = MODULES.slice(0, 5);
+
+const TAB_ICONS = {
+  dashboard: "home-outline",
+  availability: "calendar-outline",
+  flight: "airplane-outline",
+  smart: "checkmark-circle-outline",
+  alerts: "notifications-outline",
+};
+
+function formatNumber(value) {
+  const number = Number(value || 0);
+  return new Intl.NumberFormat("en-US", {
+    notation: Math.abs(number) >= 1000 ? "compact" : "standard",
+    maximumFractionDigits: Math.abs(number) >= 1000000 ? 1 : 0,
+  }).format(number);
+}
+
+function formatMoney(value) {
+  const number = Number(value || 0);
+  return new Intl.NumberFormat("en-US", {
+    notation: Math.abs(number) >= 1000 ? "compact" : "standard",
+    maximumFractionDigits: Math.abs(number) >= 1000 ? 1 : 2,
+  }).format(number);
+}
+
+function textValue(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  return String(value);
+}
+
+function uniqueOptionValues(values, limit = 80) {
+  const seen = new Set();
+  const options = [];
+  values.forEach((value) => {
+    if (value === null || value === undefined || value === "") return;
+    const option = String(value).trim();
+    const key = option.toLowerCase();
+    if (!option || option === "-" || seen.has(key)) return;
+    seen.add(key);
+    options.push(option);
+  });
+  return options.sort((a, b) => a.localeCompare(b)).slice(0, limit);
+}
+
+function Pill({ active, label, onPress }) {
+  return (
+    <Pressable onPress={onPress} style={[styles.pill, active && styles.pillActive]}>
+      <View style={[styles.dot, active && styles.dotActive]} />
+      <Text style={[styles.pillText, active && styles.pillTextActive]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function BottomTab({ active, label, icon, onPress }) {
+  return (
+    <Pressable onPress={onPress} style={styles.bottomTab}>
+      <Ionicons name={icon} size={20} color={active ? "#d8aa43" : "#7e8b99"} />
+      <Text style={[styles.bottomTabText, active && styles.bottomTabTextActive]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function StatCard({ label, value, sub, tone = "normal" }) {
+  return (
+    <View style={styles.statCard}>
+      <Text style={styles.statLabel}>{label}</Text>
+      <Text style={[styles.statValue, tone === "gold" && styles.goldText]} numberOfLines={1}>
+        {value}
+      </Text>
+      {!!sub && <Text style={styles.statSub} numberOfLines={1}>{sub}</Text>}
+    </View>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function InfoRow({ title, subtitle, right, accent }) {
+  return (
+    <View style={styles.infoRow}>
+      <View style={styles.infoBody}>
+        <Text style={[styles.infoTitle, accent && styles.goldText]} numberOfLines={1}>
+          {title}
+        </Text>
+        {!!subtitle && <Text style={styles.infoSub} numberOfLines={2}>{subtitle}</Text>}
+      </View>
+      {!!right && <Text style={styles.infoRight} numberOfLines={1}>{right}</Text>}
+    </View>
+  );
+}
+
+function EmptyState({ message }) {
+  return (
+    <View style={styles.emptyBox}>
+      <Text style={styles.emptyText}>{message}</Text>
+    </View>
+  );
+}
+
+function LoadingSkeleton() {
+  return (
+    <View style={styles.skeletonWrap}>
+      {[0, 1, 2].map((item) => <View key={item} style={styles.skeletonCard} />)}
+      <Text style={styles.loadingText}>Loading live data...</Text>
+    </View>
+  );
+}
+
+function ProfileView({ session }) {
+  const user = session?.user || {};
+  const allowed = MODULES.filter((item) => !item.permission || session?.permissions?.[item.permission] !== false);
+  return (
+    <>
+      <Section title="Account">
+        <InfoRow title={user.full_name || user.username || "Khateeb user"} subtitle={user.email || "Revenue Control Center account"} right={user.role || "User"} accent />
+      </Section>
+      <Section title="Allowed modules">
+        {allowed.map((item) => <InfoRow key={item.key} title={item.label} subtitle="Access granted by Revenue Control Center" />)}
+      </Section>
+    </>
+  );
+}
+
+function ReportButton({ label, url, tone = "gold", icon }) {
+  return (
+    <Pressable style={[styles.reportButton, styles[`reportButton_${tone}`]]} onPress={() => Linking.openURL(url)}>
+      {!!icon && <Ionicons name={icon} size={16} color={tone === "excel" ? "#157347" : tone === "pdf" ? "#c0392b" : "#d8aa43"} />}
+      <Text style={[styles.reportButtonText, styles[`reportButtonText_${tone}`]]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function filterRows(rows, search) {
+  const query = search.trim().toLowerCase();
+  if (!query) return rows;
+  return rows.filter((row) => JSON.stringify(row).toLowerCase().includes(query));
+}
+
+function SmartTasksView({ data }) {
+  const tasks = data?.tasks || [];
+  return (
+    <>
+      <View style={styles.statsGrid}>
+        <StatCard label="Revenue Health" value={`${formatNumber(data?.health)}/100`} />
+        <StatCard label="Critical" value={formatNumber(data?.critical)} tone="gold" />
+        <StatCard label="Important" value={formatNumber(data?.important)} />
+        <StatCard label="Follow Up" value={formatNumber(data?.follow_up)} />
+      </View>
+      <Section title="Top Open Tasks">
+        {tasks.length ? tasks.map((task, index) => (
+          <View key={`${task.hotel}-${index}`} style={styles.taskCard}>
+            <View style={styles.taskHeader}>
+              <Text style={[styles.taskPriority, task.priority === "CRITICAL" && styles.criticalText]}>
+                {task.priority} • {task.partition}
+              </Text>
+              <Text style={styles.taskScore}>Impact {task.impact_score}</Text>
+            </View>
+            <Text style={styles.taskTitle}>{task.title}</Text>
+            <Text style={styles.infoSub}>{task.hotel} • {task.destination}</Text>
+            <Text style={styles.taskLine}>Why: {task.why}</Text>
+            <Text style={styles.taskLine}>Action: {task.action}</Text>
+          </View>
+        )) : <EmptyState message="No open tasks for this destination." />}
+      </Section>
+    </>
+  );
+}
+
+function InhouseHotelCard({ item }) {
+  const achievement = Number(item.achievement || 0);
+  const diff = Number(item.diff || 0);
+  const progress = `${Math.min(Math.max(achievement || 0, 6), 100)}%`;
+  const months = item.months || [];
+
+  return (
+    <View style={styles.inhouseCard}>
+      <View style={styles.inhouseCardTop}>
+        <View style={styles.inhouseHotelBlock}>
+          <Text style={styles.inhouseHotelName} numberOfLines={2}>{item.hotel}</Text>
+          <Text style={styles.inhouseMeta} numberOfLines={1}>
+            Target {formatNumber(item.commitment)} • Achieved {formatNumber(item.achieved)}
+          </Text>
+        </View>
+        <View style={styles.inhouseScoreBox}>
+          <Text style={styles.inhouseScore}>{formatNumber(achievement)}%</Text>
+          <Text style={styles.inhouseScoreLabel}>Achievement</Text>
+        </View>
+      </View>
+
+      <View style={styles.inhouseProgressTrack}>
+        <View
+          style={[
+            styles.inhouseProgressFill,
+            diff >= 0 ? styles.inhouseProgressGood : styles.inhouseProgressBad,
+            { width: progress },
+          ]}
+        />
+      </View>
+
+      <View style={styles.inhouseMonthGrid}>
+        {months.slice(0, 5).map((month, index) => {
+          const monthDiff = Number(month.diff || 0);
+          return (
+            <View key={`${item.hotel}-${month.month}-${index}`} style={styles.inhouseMonthBox}>
+              <Text style={styles.inhouseMonthLabel} numberOfLines={1}>{month.month}</Text>
+              <Text style={styles.inhouseMonthValue}>{formatNumber(month.achieved)}</Text>
+              <Text
+                style={[
+                  styles.inhouseMonthDiff,
+                  monthDiff >= 0 ? styles.positiveText : styles.negativeText,
+                ]}
+              >
+                {monthDiff >= 0 ? "+" : ""}
+                {formatNumber(monthDiff)}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function DashboardView({
+  pricingDashboard,
+  contractSummary,
+  inhouseSummary,
+  hotelOptions,
+  filters,
+  setFilters,
+  onSearch,
+  onClear,
+}) {
+  const [isHotelFocused, setIsHotelFocused] = useState(false);
+  const pricing = pricingDashboard?.pricing_kpis || {};
+  const turnover = pricingDashboard?.turnover_kpis || {};
+  const contract = contractSummary || {};
+  const inhouse = inhouseSummary || {};
+  const inhouseCards = inhouse.hotel_cards || [];
+  const hotelQuery = filters.hotel.trim().toLowerCase();
+  const suggestions = (hotelOptions || [])
+    .filter((hotel) => !hotelQuery || hotel.toLowerCase().includes(hotelQuery))
+    .slice(0, hotelQuery ? 10 : 12);
+  const showSuggestions = isHotelFocused && !!suggestions.length;
+
+  return (
+    <>
+      <View style={styles.homeIntro}>
+        <View>
+          <Text style={styles.greetingText}>Good Morning, Mahmoud</Text>
+          <Text style={styles.greetingSub}>Here's what's happening today</Text>
+        </View>
+        <View style={styles.destinationChip}>
+          <Text style={styles.destinationChipText}>Current</Text>
+          <Ionicons name="chevron-down" size={14} color="#1b2430" />
+        </View>
+      </View>
+
+      <View style={styles.homeKpiGrid}>
+        <StatCard label="Revenue Today" value={formatMoney(turnover.revenue)} sub="vs yesterday" tone="gold" />
+        <StatCard label="Profit Today" value={formatMoney(turnover.profit)} sub="vs yesterday" tone="red" />
+        <StatCard label="Hotels" value={formatNumber(pricing.total_hotels)} />
+        <StatCard label="Active SPO" value={formatNumber(pricing.valid_hotels)} />
+        <StatCard label="Critical Alerts" value={formatNumber(pricing.expired_hotels)} tone="red" />
+      </View>
+
+      <View style={styles.pricingSearchBox}>
+        <Text style={styles.dashboardTitle}>Dashboard</Text>
+        <View style={styles.searchGrid}>
+          <View style={styles.searchFieldWide}>
+            <Text style={styles.inputLabel}>Hotel Name</Text>
+            <TextInput
+              value={filters.hotel}
+              onChangeText={(value) => setFilters((prev) => ({ ...prev, hotel: value }))}
+              onFocus={() => setIsHotelFocused(true)}
+              placeholder="Start typing hotel name..."
+              placeholderTextColor="#718397"
+              style={styles.input}
+            />
+            {showSuggestions && (
+              <View style={styles.suggestionBox}>
+                {suggestions.map((hotel) => (
+                  <Pressable
+                    key={hotel}
+                    style={styles.suggestionItem}
+                    onPress={() => {
+                      setFilters((prev) => ({ ...prev, hotel }));
+                      setIsHotelFocused(false);
+                    }}
+                  >
+                    <Text style={styles.suggestionText} numberOfLines={1}>{hotel}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
+          <View style={styles.searchField}>
+            <Text style={styles.inputLabel}>Date From</Text>
+            <TextInput
+              value={filters.dateFrom}
+              onChangeText={(value) => setFilters((prev) => ({ ...prev, dateFrom: value }))}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor="#718397"
+              style={styles.input}
+            />
+          </View>
+          <View style={styles.searchField}>
+            <Text style={styles.inputLabel}>Date To</Text>
+            <TextInput
+              value={filters.dateTo}
+              onChangeText={(value) => setFilters((prev) => ({ ...prev, dateTo: value }))}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor="#718397"
+              style={styles.input}
+            />
+          </View>
+        </View>
+        <View style={styles.searchActions}>
+          <Pressable style={styles.searchButton} onPress={onSearch}>
+            <Text style={styles.searchButtonText}>Search Dashboard</Text>
+          </Pressable>
+          <Pressable style={styles.clearButton} onPress={onClear}>
+            <Text style={styles.clearButtonText}>Clear</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.kpiSectionHeader}>
+        <Text style={styles.kpiSectionTitle}>Pricing KPIs</Text>
+      </View>
+      <View style={styles.kpiGrid}>
+        <KpiTile label="Total Hotels" value={formatNumber(pricing.total_hotels)} sub="Pricing scope" tone="gold" />
+        <KpiTile label="Hotels With Offers" value={formatNumber(pricing.hotels_with_offers)} sub="Has active offers" />
+        <KpiTile label="Without Offers" value={formatNumber(pricing.hotels_without_offers)} sub="No offer rows" tone="red" />
+        <KpiTile label="Valid SPO" value={formatNumber(pricing.valid_hotels)} sub="Full offer coverage" />
+        <KpiTile label="Partial SPO" value={formatNumber(pricing.partial_coverage)} sub="Offer gaps vs contract" tone="gold" />
+        <KpiTile label="Expired SPO" value={formatNumber(pricing.expired_hotels)} sub="0-4 days left" tone="red" />
+      </View>
+
+      <View style={styles.kpiSectionHeader}>
+        <Text style={styles.kpiSectionTitle}>Turnover KPIs</Text>
+      </View>
+      <View style={styles.kpiGrid}>
+        <KpiTile label="Revenue" value={formatMoney(turnover.revenue)} sub="Filtered turnover" tone="gold" />
+        <KpiTile label="Room Nights" value={formatNumber(turnover.room_nights)} sub="Total nights" tone="blue" />
+        <KpiTile label="Cost" value={formatMoney(turnover.cost)} sub="Buying cost" tone="red" />
+        <KpiTile label="Profit" value={formatMoney(turnover.profit)} sub="Revenue - cost" />
+        <KpiTile label="Profit %" value={`${formatMoney(turnover.profit_percent)}%`} sub="Margin" />
+        <KpiTile label="Bookings" value={formatNumber(turnover.bookings)} sub="Reservations" tone="blue" />
+        <KpiTile label="Pax" value={formatNumber(turnover.pax)} sub="Adult + child" />
+        <KpiTile label="Avg Booking" value={formatMoney(turnover.avg_booking)} sub="Revenue / bookings" tone="gold" />
+      </View>
+
+      <View style={styles.kpiSectionHeader}>
+        <Text style={styles.kpiSectionTitle}>Contract Situation KPIs</Text>
+      </View>
+      <View style={styles.kpiGrid}>
+        <KpiTile label="Proposal" value={formatNumber(contract.proposal)} sub="F/Y done" tone="gold" />
+        <KpiTile label="Draft" value={formatNumber(contract.draft)} sub="Y done" tone="blue" />
+        <KpiTile label="Sent HTL" value={formatNumber(contract.sent_to_htl)} sub="Y done" tone="blue" />
+        <KpiTile label="Signed HT" value={formatNumber(contract.signed_ht)} sub="Y done" />
+        <KpiTile label="Signed Company" value={formatNumber(contract.signed_company)} sub="Y done" tone="blue" />
+        <KpiTile label="Sejour" value={formatNumber(contract.sejour)} sub="Y/W/C/F done" tone="red" />
+      </View>
+
+      <View style={styles.kpiSectionHeader}>
+        <Text style={styles.kpiSectionTitle}>Inhouse KPIs</Text>
+      </View>
+      <View style={styles.kpiGrid}>
+        <KpiTile label="Lowest Month" value={inhouse.lowest_month || "No Data"} sub={`Avg ${formatNumber(inhouse.lowest_month_rooms)} Rooms`} tone="red" />
+        <KpiTile label="Lowest Hotel Occupancy" value={inhouse.lowest_hotel || "No Data"} sub={`Avg ${formatNumber(inhouse.lowest_hotel_rooms)} Rooms`} tone="gold" />
+        <KpiTile label="Highest Month" value={inhouse.highest_month || "No Data"} sub={`Avg ${formatNumber(inhouse.highest_month_rooms)} Rooms`} />
+        <KpiTile label="Highest Hotel Occupancy" value={inhouse.highest_hotel || "No Data"} sub={`Avg ${formatNumber(inhouse.highest_hotel_rooms)} Rooms`} tone="blue" />
+      </View>
+      {inhouseCards.length ? (
+        <View style={styles.inhouseCardsWrap}>
+          {inhouseCards.slice(0, 12).map((item) => (
+            <InhouseHotelCard key={item.hotel} item={item} />
+          ))}
+        </View>
+      ) : !inhouse.rows && (
+        <View style={styles.noticeBar}>
+          <Text style={styles.noticeText}>No inhouse hotel data available.</Text>
+        </View>
+      )}
+    </>
+  );
+}
+
+function KpiTile({ label, value, sub, active, tone = "normal", onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[styles.kpiTile, active && styles.kpiTileActive]}
+    >
+      <View style={[styles.kpiIcon, tone === "red" && styles.kpiIconRed, tone === "blue" && styles.kpiIconBlue]}>
+        <Text style={[styles.kpiIconText, tone === "red" && styles.criticalText]}>
+          {label.charAt(0)}
+        </Text>
+      </View>
+      <View style={styles.kpiBody}>
+        <Text style={styles.statLabel}>{label}</Text>
+        <Text style={[styles.statValue, tone === "gold" && styles.goldText]} numberOfLines={1}>
+          {value}
+        </Text>
+        {!!sub && <Text style={styles.statSub} numberOfLines={1}>{sub}</Text>}
+      </View>
+    </Pressable>
+  );
+}
+
+function SmartSearchField({
+  name,
+  label,
+  value,
+  placeholder,
+  options = [],
+  focusedField,
+  setFocusedField,
+  setFilters,
+  keyboardType = "default",
+  onSubmit,
+}) {
+  const query = value.trim().toLowerCase();
+  const suggestions = options
+    .filter((option) => !query || option.toLowerCase().includes(query))
+    .slice(0, query ? 10 : 12);
+  const isFocused = focusedField === name;
+
+  return (
+    <View style={[styles.pricingFilterField, name === "hotel" && styles.pricingFilterFieldFull]}>
+      <Text style={styles.inputLabel}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={(nextValue) => setFilters((prev) => ({ ...prev, [name]: nextValue }))}
+        onFocus={() => setFocusedField(name)}
+        placeholder={placeholder}
+        placeholderTextColor="#718397"
+        style={styles.input}
+        keyboardType={keyboardType}
+        onSubmitEditing={onSubmit}
+      />
+      {isFocused && !!suggestions.length && (
+        <View style={styles.suggestionBox}>
+          {suggestions.map((option) => (
+            <Pressable
+              key={`${name}-${option}`}
+              style={styles.suggestionItem}
+              onPress={() => {
+                setFilters((prev) => ({ ...prev, [name]: option }));
+                setFocusedField("");
+              }}
+            >
+              <Text style={styles.suggestionText} numberOfLines={1}>{option}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function PricingView({ dashboard, hotelOptions, filters, setFilters, onSearch, onClear }) {
+  const [focusedField, setFocusedField] = useState("");
+  const [mailPanelOpen, setMailPanelOpen] = useState(false);
+  const [mailAddress, setMailAddress] = useState("");
+  const [mailFormat, setMailFormat] = useState("xlsx");
+  const [savedMails, setSavedMails] = useState([]);
+  const rows = dashboard?.rows || [];
+  const pricing = dashboard?.pricing_kpis || {};
+  const params = [];
+  if (filters.hotel.trim()) params.push(`hotel=${encodeURIComponent(filters.hotel.trim())}`);
+  if (filters.stars.trim()) params.push(`stars=${encodeURIComponent(filters.stars.trim())}`);
+  if (filters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(filters.dateFrom.trim())}`);
+  if (filters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(filters.dateTo.trim())}`);
+  if (filters.room.trim()) params.push(`room=${encodeURIComponent(filters.room.trim())}`);
+  if (filters.board.trim()) params.push(`board=${encodeURIComponent(filters.board.trim())}`);
+  if (filters.price.trim()) params.push(`price=${encodeURIComponent(filters.price.trim())}`);
+  const query = params.length ? `?${params.join("&")}` : "";
+  const pricingExcelUrl = `${API_BASE_URL}/export/pricing/${dashboard?.destination || "Hurghada"}.xlsx${query}`;
+  const pricingPdfUrl = `${API_BASE_URL}/export/pricing/${dashboard?.destination || "Hurghada"}.pdf${query}`;
+  const selectedMailUrl = mailFormat === "pdf" ? pricingPdfUrl : pricingExcelUrl;
+  const roomOptions = uniqueOptionValues(rows.map((row) => row["Room Type"]));
+  const boardOptions = uniqueOptionValues(rows.map((row) => row.Board));
+  const starOptions = ["5", "4", "3", "2", "1"];
+  const priceOptions = uniqueOptionValues(
+    rows.flatMap((row) => [row.Selling, row.Buying, row["Contract Rate"]])
+      .filter((value) => value !== null && value !== undefined && value !== "")
+      .map((value) => String(Math.round(Number(value))))
+      .filter((value) => value !== "NaN"),
+    24
+  );
+  const sendReportByMail = useCallback(() => {
+    const email = mailAddress.trim();
+    if (!email) return;
+    const nextSaved = [email, ...savedMails.filter((item) => item.toLowerCase() !== email.toLowerCase())].slice(0, 8);
+    setSavedMails(nextSaved);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      window.localStorage.setItem("khateeb_report_mails", JSON.stringify(nextSaved));
+    }
+    const subject = encodeURIComponent(`Pricing ${mailFormat.toUpperCase()} Report`);
+    const body = encodeURIComponent(`Hello,\n\nPlease download the ${mailFormat.toUpperCase()} pricing report from this link:\n${selectedMailUrl}`);
+    Linking.openURL(`mailto:${email}?subject=${subject}&body=${body}`);
+  }, [mailAddress, mailFormat, savedMails, selectedMailUrl]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem("khateeb_report_mails") || "[]");
+      if (Array.isArray(stored)) setSavedMails(stored.filter(Boolean).slice(0, 8));
+    } catch {
+      setSavedMails([]);
+    }
+  }, []);
+
+  return (
+    <>
+      <View style={styles.mobileScreenHeader}>
+        <Text style={styles.mobileScreenTitle}>Pricing Center</Text>
+        <Pressable style={styles.roundIconButton} onPress={onSearch}>
+          <Ionicons name="options-outline" size={20} color="#1b2430" />
+        </Pressable>
+      </View>
+
+      <View style={styles.searchBar}>
+        <Ionicons name="search-outline" size={18} color="#9aa3ad" />
+        <TextInput
+          value={filters.hotel}
+          onChangeText={(value) => setFilters((prev) => ({ ...prev, hotel: value }))}
+          onFocus={() => setFocusedField("hotel")}
+          placeholder="Search hotel..."
+          placeholderTextColor="#9aa3ad"
+          style={styles.searchBarInput}
+          onSubmitEditing={onSearch}
+        />
+      </View>
+      {focusedField === "hotel" && !!hotelOptions?.length && (
+        <View style={styles.pricingTopSuggestions}>
+          {hotelOptions
+            .filter((hotel) => !filters.hotel.trim() || hotel.toLowerCase().includes(filters.hotel.trim().toLowerCase()))
+            .slice(0, filters.hotel.trim() ? 10 : 12)
+            .map((hotel) => (
+              <Pressable
+                key={hotel}
+                style={styles.suggestionItem}
+                onPress={() => {
+                  setFilters((prev) => ({ ...prev, hotel }));
+                  setFocusedField("");
+                }}
+              >
+                <Text style={styles.suggestionText} numberOfLines={1}>{hotel}</Text>
+              </Pressable>
+            ))}
+        </View>
+      )}
+
+      <View style={styles.pricingFiltersBox}>
+        <View style={styles.pricingFiltersGrid}>
+          <SmartSearchField
+            name="stars"
+            label="Stars"
+            value={filters.stars}
+            placeholder="All stars"
+            options={starOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            keyboardType="numeric"
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="room"
+            label="Room Name"
+            value={filters.room}
+            placeholder="Start typing room..."
+            options={roomOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="board"
+            label="Meal Plan"
+            value={filters.board}
+            placeholder="Start typing meal..."
+            options={boardOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="dateFrom"
+            label="Date From"
+            value={filters.dateFrom}
+            placeholder="YYYY-MM-DD"
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="dateTo"
+            label="Date To"
+            value={filters.dateTo}
+            placeholder="YYYY-MM-DD"
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="price"
+            label="Price"
+            value={filters.price}
+            placeholder="Search price..."
+            options={priceOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            keyboardType="numeric"
+            onSubmit={onSearch}
+          />
+        </View>
+        <View style={styles.searchActions}>
+          <Pressable style={styles.searchButton} onPress={onSearch}>
+            <Text style={styles.searchButtonText}>Search Pricing</Text>
+          </Pressable>
+          <Pressable style={styles.clearButton} onPress={onClear}>
+            <Text style={styles.clearButtonText}>Clear</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.contractReportBox}>
+        <ReportButton label="Excel" icon="document-text-outline" tone="excel" url={pricingExcelUrl} />
+        <ReportButton label="PDF" icon="document-outline" tone="pdf" url={pricingPdfUrl} />
+        <Pressable style={styles.mailButton} onPress={() => setMailPanelOpen((value) => !value)}>
+          <Ionicons name="send-outline" size={16} color="#1b2430" />
+          <Text style={styles.mailButtonText}>Send by mail</Text>
+        </Pressable>
+      </View>
+
+      {mailPanelOpen && (
+        <View style={styles.mailPanel}>
+          <Text style={styles.inputLabel}>Recipient Email</Text>
+          <TextInput
+            value={mailAddress}
+            onChangeText={setMailAddress}
+            placeholder="example@email.com"
+            placeholderTextColor="#718397"
+            autoCapitalize="none"
+            keyboardType="email-address"
+            style={styles.input}
+          />
+          {!!savedMails.length && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedMailRow}>
+              {savedMails.map((email) => (
+                <Pressable key={email} style={styles.savedMailChip} onPress={() => setMailAddress(email)}>
+                  <Text style={styles.savedMailText}>{email}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          <Text style={styles.inputLabel}>File Type</Text>
+          <View style={styles.mailFormatRow}>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "xlsx" && styles.mailFormatButtonActiveExcel]}
+              onPress={() => setMailFormat("xlsx")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "xlsx" && styles.mailFormatTextExcel]}>Excel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "pdf" && styles.mailFormatButtonActivePdf]}
+              onPress={() => setMailFormat("pdf")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "pdf" && styles.mailFormatTextPdf]}>PDF</Text>
+            </Pressable>
+          </View>
+          <Pressable style={styles.sendMailConfirm} onPress={sendReportByMail}>
+            <Text style={styles.searchButtonText}>Send</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <View style={styles.pricingKpiGrid}>
+        <StatCard label="Total Hotels" value={formatNumber(pricing.total_hotels)} />
+        <StatCard label="Valid SPO" value={formatNumber(pricing.valid_hotels)} />
+        <StatCard label="Expired" value={formatNumber(pricing.expired_hotels)} tone="red" />
+        <StatCard label="Increase" value={formatNumber(pricing.hotels_with_offers)} />
+        <StatCard label="Decrease" value={formatNumber(pricing.hotels_without_offers)} tone="red" />
+        <StatCard label="Partial" value={formatNumber(pricing.partial_coverage)} tone="gold" />
+      </View>
+
+      <Section title={`Hotels (${formatNumber(dashboard?.matched_rows)} rows)`}>
+        {rows.length ? rows.map((row, index) => (
+          <Pressable
+            key={`${textValue(row.Hotel || row["Hotel Name"])}-${textValue(row["Room Type"])}-${index}`}
+            style={styles.pricingListCard}
+          >
+            <View style={styles.hotelThumb}>
+              <Ionicons name="business-outline" size={24} color="#d8aa43" />
+            </View>
+            <View style={styles.pricingListBody}>
+              <View style={styles.pricingListHeader}>
+                <Text style={styles.pricingListHotel} numberOfLines={1}>{textValue(row.Hotel)}</Text>
+                <Text style={styles.ratingText}>★★★★★</Text>
+              </View>
+              <Text style={styles.pricingListMeta} numberOfLines={1}>
+                {textValue(row["Room Type"])} • {textValue(row.Board)}
+              </Text>
+              <View style={styles.priceMiniGrid}>
+                <View>
+                  <Text style={styles.miniLabel}>Contract</Text>
+                  <Text style={styles.miniValue}>{row["Contract Rate"] ? formatMoney(row["Contract Rate"]) : "-"}</Text>
+                </View>
+                <View>
+                  <Text style={styles.miniLabel}>Offer</Text>
+                  <Text style={[styles.miniValue, styles.goldText]}>{row.Selling ? formatMoney(row.Selling) : "-"}</Text>
+                </View>
+                <View>
+                  <Text style={styles.miniLabel}>Days Left</Text>
+                  <Text style={styles.miniValue}>{textValue(row["Days Left"])}</Text>
+                </View>
+              </View>
+            </View>
+            <View style={styles.statusBadge}>
+              <Text style={styles.statusBadgeText}>
+                {Number(row["Days Left"] || 0) <= 4 ? "EXPIRED" : row.Selling ? "VALID" : "PARTIAL"}
+              </Text>
+            </View>
+          </Pressable>
+        )) : <EmptyState message="No pricing rows found." />}
+      </Section>
+    </>
+  );
+}
+
+function TurnoverView({ summary, rows, destination, hotelOptions, filters, setFilters, onSearch, onClear }) {
+  const [focusedField, setFocusedField] = useState("");
+  const [mailPanelOpen, setMailPanelOpen] = useState(false);
+  const [mailAddress, setMailAddress] = useState("");
+  const [mailFormat, setMailFormat] = useState("xlsx");
+  const [savedMails, setSavedMails] = useState([]);
+  const params = [];
+  if (filters.hotel.trim()) params.push(`hotel=${encodeURIComponent(filters.hotel.trim())}`);
+  if (filters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(filters.dateFrom.trim())}`);
+  if (filters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(filters.dateTo.trim())}`);
+  const query = params.length ? `?${params.join("&")}` : "";
+  const salesExcelUrl = `${API_BASE_URL}/export/sales/${destination}.xlsx${query}`;
+  const salesPdfUrl = `${API_BASE_URL}/export/sales/${destination}.pdf${query}`;
+  const selectedMailUrl = mailFormat === "pdf" ? salesPdfUrl : salesExcelUrl;
+
+  const sendReportByMail = useCallback(() => {
+    const email = mailAddress.trim();
+    if (!email) return;
+    const nextSaved = [email, ...savedMails.filter((item) => item.toLowerCase() !== email.toLowerCase())].slice(0, 8);
+    setSavedMails(nextSaved);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      window.localStorage.setItem("khateeb_report_mails", JSON.stringify(nextSaved));
+    }
+    const subject = encodeURIComponent(`Revenue ${mailFormat.toUpperCase()} Report`);
+    const body = encodeURIComponent(`Hello,\n\nPlease download the ${mailFormat.toUpperCase()} revenue report from this link:\n${selectedMailUrl}`);
+    Linking.openURL(`mailto:${email}?subject=${subject}&body=${body}`);
+  }, [mailAddress, mailFormat, savedMails, selectedMailUrl]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem("khateeb_report_mails") || "[]");
+      if (Array.isArray(stored)) setSavedMails(stored.filter(Boolean).slice(0, 8));
+    } catch {
+      setSavedMails([]);
+    }
+  }, []);
+
+  return (
+    <>
+      <View style={styles.pricingFiltersBox}>
+        <Text style={styles.inputLabel}>Revenue Search</Text>
+        <SmartSearchField
+          name="hotel"
+          label="Hotel Name"
+          value={filters.hotel}
+          placeholder="Start typing hotel name..."
+          options={hotelOptions}
+          focusedField={focusedField}
+          setFocusedField={setFocusedField}
+          setFilters={setFilters}
+          onSubmit={onSearch}
+        />
+        <View style={styles.revenueDateGrid}>
+          <SmartSearchField
+            name="dateFrom"
+            label="Check In From"
+            value={filters.dateFrom}
+            placeholder="YYYY-MM-DD"
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+          <SmartSearchField
+            name="dateTo"
+            label="Check In To"
+            value={filters.dateTo}
+            placeholder="YYYY-MM-DD"
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            onSubmit={onSearch}
+          />
+        </View>
+        <View style={styles.searchActions}>
+          <Pressable style={styles.searchButton} onPress={onSearch}>
+            <Text style={styles.searchButtonText}>Search Revenue</Text>
+          </Pressable>
+          <Pressable style={styles.clearButton} onPress={onClear}>
+            <Text style={styles.clearButtonText}>Clear</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.contractReportBox}>
+        <ReportButton label="Excel" icon="document-text-outline" tone="excel" url={salesExcelUrl} />
+        <ReportButton label="PDF" icon="document-outline" tone="pdf" url={salesPdfUrl} />
+        <Pressable style={styles.mailButton} onPress={() => setMailPanelOpen((value) => !value)}>
+          <Ionicons name="send-outline" size={16} color="#1b2430" />
+          <Text style={styles.mailButtonText}>Send by mail</Text>
+        </Pressable>
+      </View>
+
+      {mailPanelOpen && (
+        <View style={styles.mailPanel}>
+          <Text style={styles.inputLabel}>Recipient Email</Text>
+          <TextInput
+            value={mailAddress}
+            onChangeText={setMailAddress}
+            placeholder="example@email.com"
+            placeholderTextColor="#718397"
+            autoCapitalize="none"
+            keyboardType="email-address"
+            style={styles.input}
+          />
+          {!!savedMails.length && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedMailRow}>
+              {savedMails.map((email) => (
+                <Pressable key={email} style={styles.savedMailChip} onPress={() => setMailAddress(email)}>
+                  <Text style={styles.savedMailText}>{email}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          <Text style={styles.inputLabel}>File Type</Text>
+          <View style={styles.mailFormatRow}>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "xlsx" && styles.mailFormatButtonActiveExcel]}
+              onPress={() => setMailFormat("xlsx")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "xlsx" && styles.mailFormatTextExcel]}>Excel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "pdf" && styles.mailFormatButtonActivePdf]}
+              onPress={() => setMailFormat("pdf")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "pdf" && styles.mailFormatTextPdf]}>PDF</Text>
+            </Pressable>
+          </View>
+          <Pressable style={styles.sendMailConfirm} onPress={sendReportByMail}>
+            <Text style={styles.searchButtonText}>Send</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <View style={styles.statsGrid}>
+        <StatCard label="Sales Rows" value={formatNumber(summary?.rows)} />
+        <StatCard label="Vouchers" value={formatNumber(summary?.vouchers)} />
+        <StatCard label="Room Nights" value={formatNumber(summary?.room_nights)} />
+        <StatCard label="Total Sales" value={formatMoney(summary?.total_sales)} tone="gold" />
+        <StatCard label="Total Buying" value={formatMoney(summary?.total_buying)} />
+        <StatCard label="Profit" value={formatMoney(summary?.profit)} tone="gold" />
+      </View>
+      <Section title="Top Hotels">
+        {(summary?.top_hotels || []).length ? summary.top_hotels.map((item, index) => (
+          <InfoRow
+            key={`${item.hotel}-${index}`}
+            title={textValue(item.hotel)}
+            subtitle={`Rooms ${formatNumber(item.rooms)} • Profit ${formatMoney(item.profit)}`}
+            right={formatMoney(item.total_sales)}
+            accent
+          />
+        )) : <EmptyState message="No turnover file for this destination yet." />}
+      </Section>
+      <Section title="Latest Sales Rows">
+        {rows.length ? rows.map((row, index) => (
+          <InfoRow
+            key={`${row.Voucher}-${index}`}
+            title={textValue(row["Hotel Name"] || row.Hotel)}
+            subtitle={`${textValue(row["Operator Name"] || row.Operator)} • Voucher ${textValue(row.Voucher)}`}
+            right={row["Total Selling Inv."] ? formatMoney(row["Total Selling Inv."]) : "-"}
+            accent={!!row["Total Selling Inv."]}
+          />
+        )) : <EmptyState message="No sales rows to show." />}
+      </Section>
+    </>
+  );
+}
+
+function ContractSituationView({ summary, rows, destination }) {
+  const [filters, setFilters] = useState({ hotel: "", status: "", stars: "" });
+  const [focusedField, setFocusedField] = useState("");
+  const [mailPanelOpen, setMailPanelOpen] = useState(false);
+  const [mailAddress, setMailAddress] = useState("");
+  const [mailFormat, setMailFormat] = useState("xlsx");
+  const [savedMails, setSavedMails] = useState([]);
+  const hotelOptions = uniqueOptionValues(rows.map((row) => row.HOTEL));
+  const statusOptions = uniqueOptionValues(rows.flatMap((row) => [row["HOTEL STATUS"], row.STATUE]));
+  const starOptions = uniqueOptionValues(rows.map((row) => row.STAR), 12);
+  const contractExcelUrl = `${API_BASE_URL}/export/contracts/${destination}.xlsx`;
+  const contractPdfUrl = `${API_BASE_URL}/export/contracts/${destination}.pdf`;
+  const selectedMailUrl = mailFormat === "pdf" ? contractPdfUrl : contractExcelUrl;
+  const filteredRows = rows.filter((row) => {
+    const hotel = textValue(row.HOTEL).toLowerCase();
+    const status = `${textValue(row["HOTEL STATUS"])} ${textValue(row.STATUE)}`.toLowerCase();
+    const stars = textValue(row.STAR).toLowerCase();
+    return (
+      (!filters.hotel.trim() || hotel.includes(filters.hotel.trim().toLowerCase())) &&
+      (!filters.status.trim() || status.includes(filters.status.trim().toLowerCase())) &&
+      (!filters.stars.trim() || stars.includes(filters.stars.trim().toLowerCase()))
+    );
+  });
+  const sendReportByMail = useCallback(() => {
+    const email = mailAddress.trim();
+    if (!email) return;
+    const nextSaved = [email, ...savedMails.filter((item) => item.toLowerCase() !== email.toLowerCase())].slice(0, 8);
+    setSavedMails(nextSaved);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      window.localStorage.setItem("khateeb_report_mails", JSON.stringify(nextSaved));
+    }
+    const subject = encodeURIComponent(`Contracts ${mailFormat.toUpperCase()} Report`);
+    const body = encodeURIComponent(`Hello,\n\nPlease download the ${mailFormat.toUpperCase()} contracts report from this link:\n${selectedMailUrl}`);
+    Linking.openURL(`mailto:${email}?subject=${subject}&body=${body}`);
+  }, [mailAddress, mailFormat, savedMails, selectedMailUrl]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem("khateeb_report_mails") || "[]");
+      if (Array.isArray(stored)) setSavedMails(stored.filter(Boolean).slice(0, 8));
+    } catch {
+      setSavedMails([]);
+    }
+  }, []);
+
+  return (
+    <>
+      <View style={styles.pricingFiltersBox}>
+        <Text style={styles.inputLabel}>Contracts Search</Text>
+        <SmartSearchField
+          name="hotel"
+          label="Hotel Name"
+          value={filters.hotel}
+          placeholder="Start typing hotel name..."
+          options={hotelOptions}
+          focusedField={focusedField}
+          setFocusedField={setFocusedField}
+          setFilters={setFilters}
+        />
+        <View style={styles.revenueDateGrid}>
+          <SmartSearchField
+            name="status"
+            label="Status"
+            value={filters.status}
+            placeholder="Draft, signed, proposal..."
+            options={statusOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+          />
+          <SmartSearchField
+            name="stars"
+            label="Stars"
+            value={filters.stars}
+            placeholder="All stars"
+            options={starOptions}
+            focusedField={focusedField}
+            setFocusedField={setFocusedField}
+            setFilters={setFilters}
+            keyboardType="numeric"
+          />
+        </View>
+        <View style={styles.searchActions}>
+          <Pressable style={[styles.clearButton, styles.contractClearButton]} onPress={() => setFilters({ hotel: "", status: "", stars: "" })}>
+            <Text style={styles.clearButtonText}>Clear</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.contractReportBox}>
+        <ReportButton label="Excel" icon="document-text-outline" tone="excel" url={contractExcelUrl} />
+        <ReportButton label="PDF" icon="document-outline" tone="pdf" url={contractPdfUrl} />
+        <Pressable style={styles.mailButton} onPress={() => setMailPanelOpen((value) => !value)}>
+          <Ionicons name="send-outline" size={16} color="#1b2430" />
+          <Text style={styles.mailButtonText}>Send by mail</Text>
+        </Pressable>
+      </View>
+
+      {mailPanelOpen && (
+        <View style={styles.mailPanel}>
+          <Text style={styles.inputLabel}>Recipient Email</Text>
+          <TextInput
+            value={mailAddress}
+            onChangeText={setMailAddress}
+            placeholder="example@email.com"
+            placeholderTextColor="#718397"
+            autoCapitalize="none"
+            keyboardType="email-address"
+            style={styles.input}
+          />
+          {!!savedMails.length && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.savedMailRow}>
+              {savedMails.map((email) => (
+                <Pressable key={email} style={styles.savedMailChip} onPress={() => setMailAddress(email)}>
+                  <Text style={styles.savedMailText}>{email}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          <Text style={styles.inputLabel}>File Type</Text>
+          <View style={styles.mailFormatRow}>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "xlsx" && styles.mailFormatButtonActiveExcel]}
+              onPress={() => setMailFormat("xlsx")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "xlsx" && styles.mailFormatTextExcel]}>Excel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.mailFormatButton, mailFormat === "pdf" && styles.mailFormatButtonActivePdf]}
+              onPress={() => setMailFormat("pdf")}
+            >
+              <Text style={[styles.mailFormatText, mailFormat === "pdf" && styles.mailFormatTextPdf]}>PDF</Text>
+            </Pressable>
+          </View>
+          <Pressable style={styles.sendMailConfirm} onPress={sendReportByMail}>
+            <Text style={styles.searchButtonText}>Send</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <View style={styles.statsGrid}>
+        <StatCard label="Rows" value={formatNumber(summary?.rows)} />
+        <StatCard label="Hotels" value={formatNumber(summary?.hotels)} />
+        <StatCard label="Draft" value={formatNumber(summary?.draft)} />
+        <StatCard label="Signed HT" value={formatNumber(summary?.signed_ht)} tone="gold" />
+        <StatCard label="Signed Company" value={formatNumber(summary?.signed_company)} />
+        <StatCard label="Proposal" value={formatNumber(summary?.proposal)} />
+      </View>
+      <Section title="Contract Situation">
+        {filteredRows.length ? filteredRows.map((row, index) => (
+          <InfoRow
+            key={`${row.HOTEL}-${index}`}
+            title={textValue(row.HOTEL)}
+            subtitle={`${textValue(row.RESORT)} • ${textValue(row["HOTEL STATUS"])} • ${textValue(row.STATUE)}`}
+            right={textValue(row.STAR)}
+          />
+        )) : <EmptyState message="No contract situation rows." />}
+      </Section>
+    </>
+  );
+}
+
+function DataCenterView({ data }) {
+  return (
+    <>
+      <View style={styles.statsGrid}>
+        <StatCard label="Datasets" value={formatNumber(data?.count)} />
+        <StatCard label="Total Rows" value={formatNumber(data?.total_rows)} tone="gold" />
+      </View>
+      <Section title="Data Files">
+        {(data?.datasets || []).map((item, index) => (
+          <InfoRow
+            key={`${item.folder}-${item.name}-${index}`}
+            title={item.name}
+            subtitle={`${item.folder} • ${formatNumber(item.columns)} columns • ${item.fields?.join(", ") || "No fields"}`}
+            right={formatNumber(item.rows)}
+            accent={item.rows > 0}
+          />
+        ))}
+      </Section>
+    </>
+  );
+}
+
+function AvailabilityView({ data }) {
+  return (
+    <>
+      <View style={styles.statsGrid}>
+        <StatCard label="Hotels" value={formatNumber(data?.hotels)} />
+        <StatCard label="Rows" value={formatNumber((data?.rows || []).length)} />
+      </View>
+      <Section title="Availability Monitor">
+        {(data?.rows || []).map((row, index) => (
+          <InfoRow
+            key={`${row.Hotel}-${index}`}
+            title={textValue(row.Hotel)}
+            subtitle={`Contract rows ${formatNumber(row.contract_rows)} • Offer rows ${formatNumber(row.offer_rows)}`}
+            right={formatNumber(row.total_rows)}
+            accent
+          />
+        ))}
+      </Section>
+    </>
+  );
+}
+
+const OVERVIEW_LABELS = {
+  rooms: "Rooms",
+  hotels: "Hotels",
+  rows: "Rows",
+  rules: "Rules",
+  active_now: "Active Now",
+  upcoming: "Upcoming",
+  expired: "Expired",
+  full_blocks: "Full Blocks",
+  commitment: "Commitment",
+  achieved: "Achieved",
+  difference: "Difference",
+  achievement: "Achievement %",
+  flights: "Flights",
+  allocated: "Allocated Seats",
+  sold: "Sold Seats",
+  empty: "Empty Seats",
+  load_factor: "Load Factor %",
+  full_flights: "Full Flights",
+  low_load_flights: "Low Load",
+};
+
+function overviewRowText(row, type) {
+  if (type === "flight") {
+    return {
+      title: `${textValue(row.flight_number)} • ${textValue(row.flight_date)}`,
+      subtitle: `${textValue(row.departure_city || row.origin_city)} → ${textValue(row.destination_name || row.destination_city)} • ${textValue(row.market)}`,
+      right: `${formatNumber(row.sold_seats)}/${formatNumber(row.seats)}`,
+    };
+  }
+  if (type === "stopsale") {
+    return {
+      title: textValue(row.hotel_name || row.Hotel),
+      subtitle: `${textValue(row.Status)} • ${textValue(row.begin_date)} → ${textValue(row.end_date)} • ${textValue(row.explanation)}`,
+      right: textValue(row.operator),
+    };
+  }
+  if (type === "target") {
+    return {
+      title: textValue(row.Hotel),
+      subtitle: `${textValue(row.Month)} • Commitment ${formatNumber(row.Commitment)} • Achieved ${formatNumber(row.Achieved)}`,
+      right: `${Number(row["Achievement %"] || 0).toFixed(1)}%`,
+    };
+  }
+  return {
+    title: textValue(row.Hotel || row.hotel || row["Hotel Name"]),
+    subtitle: `${textValue(row.Date || row.date)} • ${textValue(row.Destination || row.Region)} • ${formatNumber(row.Rooms)} rooms`,
+    right: textValue(row.Month),
+  };
+}
+
+function OperationalOverviewView({ data, type, title }) {
+  const kpis = data?.kpis || {};
+  const rows = data?.rows || [];
+  const visibleKpis = Object.entries(kpis).filter(([key, value]) => key !== "as_of" && key !== "month" && value !== null);
+  return (
+    <>
+      <View style={styles.statsGrid}>
+        {visibleKpis.map(([key, value]) => (
+          <StatCard
+            key={key}
+            label={OVERVIEW_LABELS[key] || key.replaceAll("_", " ")}
+            value={typeof value === "number" ? formatNumber(value) : textValue(value)}
+            tone={["active_now", "achieved", "sold", "load_factor"].includes(key) ? "gold" : "normal"}
+          />
+        ))}
+      </View>
+      <Section title={title}>
+        {!rows.length ? (
+          <EmptyState message={`No ${title.toLowerCase()} data matches the current filters.`} />
+        ) : (
+          rows.map((row, index) => {
+            const item = overviewRowText(row, type);
+            return (
+              <InfoRow
+                key={`${item.title}-${index}`}
+                title={item.title}
+                subtitle={item.subtitle}
+                right={item.right}
+                accent={type === "stopsale" && row.Status === "Active Now"}
+              />
+            );
+          })
+        )}
+      </Section>
+    </>
+  );
+}
+
+function LiveLoginStatusBar() {
+  const [now, setNow] = useState(() => new Date());
+  const [online, setOnline] = useState(() =>
+    Platform.OS === "web" && typeof navigator !== "undefined" ? navigator.onLine : true
+  );
+  const [batteryLevel, setBatteryLevel] = useState(null);
+  const [charging, setCharging] = useState(false);
+
+  useEffect(() => {
+    const clock = setInterval(() => setNow(new Date()), 30000);
+    if (Platform.OS !== "web" || typeof window === "undefined") {
+      return () => clearInterval(clock);
+    }
+
+    const updateOnline = () => setOnline(navigator.onLine);
+    window.addEventListener("online", updateOnline);
+    window.addEventListener("offline", updateOnline);
+
+    let battery;
+    const updateBattery = () => {
+      setBatteryLevel(battery ? Math.round(battery.level * 100) : null);
+      setCharging(Boolean(battery?.charging));
+    };
+    if (typeof navigator.getBattery === "function") {
+      navigator.getBattery().then((value) => {
+        battery = value;
+        updateBattery();
+        battery.addEventListener("levelchange", updateBattery);
+        battery.addEventListener("chargingchange", updateBattery);
+      }).catch(() => {});
+    }
+
+    return () => {
+      clearInterval(clock);
+      window.removeEventListener("online", updateOnline);
+      window.removeEventListener("offline", updateOnline);
+      battery?.removeEventListener("levelchange", updateBattery);
+      battery?.removeEventListener("chargingchange", updateBattery);
+    };
+  }, []);
+
+  const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
+  return (
+    <View style={styles.loginLiveStatusBar}>
+      <Text style={styles.loginLiveTime}>{time}</Text>
+      <View style={styles.loginLiveIndicators}>
+        <View style={styles.loginSignalBars}>
+          {[5, 8, 11, 14].map((height, index) => (
+            <View
+              key={height}
+              style={[styles.loginSignalBar, { height, opacity: online || index === 0 ? 1 : 0.25 }]}
+            />
+          ))}
+        </View>
+        <Ionicons name={online ? "wifi" : "wifi-outline"} size={18} color="#0b1117" />
+        <View style={styles.loginBatteryShell}>
+          <View
+            style={[
+              styles.loginBatteryFill,
+              {
+                width: `${Math.max(8, batteryLevel ?? 72)}%`,
+                backgroundColor: charging ? "#2f9e59" : "#0b1117",
+              },
+            ]}
+          />
+        </View>
+        <View style={styles.loginBatteryTip} />
+        {batteryLevel !== null && <Text style={styles.loginBatteryText}>{batteryLevel}%</Text>}
+      </View>
+    </View>
+  );
+}
+
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [loginError, setLoginError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submitLogin = useCallback(async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const session = await apiLogin(username.trim(), password);
+      setLoginError("");
+      onLogin(session);
+    } catch (error) {
+      setLoginError(error.message || "Invalid username or password");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [onLogin, password, submitting, username]);
+
+  return (
+    <SafeAreaView style={styles.loginExactSafeArea}>
+      <StatusBar style="dark" />
+      <ImageBackground
+        source={require("./assets/login-screen-no-biometric.png")}
+        resizeMode="contain"
+        style={styles.loginExactFrame}
+        imageStyle={styles.loginExactImage}
+      >
+        <LiveLoginStatusBar />
+        <TextInput
+          value={username}
+          onChangeText={setUsername}
+          autoCapitalize="none"
+          placeholder=""
+          style={[styles.loginExactInput, styles.loginExactUsername]}
+        />
+        <TextInput
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry={!showPassword}
+          placeholder=""
+          style={[styles.loginExactInput, styles.loginExactPassword]}
+          onSubmitEditing={submitLogin}
+        />
+        <Pressable
+          accessibilityLabel="Show password"
+          style={styles.loginExactEye}
+          onPress={() => setShowPassword((value) => !value)}
+        />
+        <Pressable
+          accessibilityLabel="Remember me"
+          style={styles.loginExactRemember}
+          onPress={() => setRememberMe((value) => !value)}
+        >
+          {rememberMe && <Ionicons name="checkmark" size={14} color="#d8aa43" />}
+        </Pressable>
+        {!!loginError && <Text style={styles.loginExactError}>{loginError}</Text>}
+        <Pressable accessibilityLabel="Login" disabled={submitting} style={styles.loginExactButton} onPress={submitLogin} />
+      </ImageBackground>
+    </SafeAreaView>
+  );
+}
+
+function DrawerMenu({ activeModule, items, session, onNavigate, onClose, onLogout }) {
+  return (
+    <View style={styles.drawerOverlay}>
+      <Pressable style={styles.drawerBackdrop} onPress={onClose} />
+      <View style={styles.drawerPanel}>
+        <View style={styles.drawerProfile}>
+          <View style={styles.drawerAvatar}>
+            <Text style={styles.drawerAvatarText}>{(session?.user?.full_name || session?.user?.username || "K").slice(0, 2).toUpperCase()}</Text>
+          </View>
+          <View>
+            <Text style={styles.drawerName}>{session?.user?.full_name || session?.user?.username || "Khateeb"}</Text>
+            <Text style={styles.drawerRole}>{session?.user?.role || "User"}</Text>
+          </View>
+        </View>
+
+        <View style={styles.drawerDivider} />
+
+        <View style={styles.drawerItems}>
+          {items.map((item) => {
+            const active = activeModule === item.key;
+            return (
+              <Pressable
+                key={item.key}
+                style={[styles.drawerItem, active && styles.drawerItemActive]}
+                onPress={() => onNavigate(item.key)}
+              >
+                <View style={[styles.drawerIconBox, active && styles.drawerIconBoxActive]}>
+                  <Ionicons name={item.icon} size={22} color={active ? "#d8aa43" : "#ffffff"} />
+                </View>
+                <Text style={[styles.drawerItemText, active && styles.drawerItemTextActive]}>{item.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={styles.drawerDivider} />
+
+        <Pressable style={styles.drawerLogout} onPress={onLogout}>
+          <View style={styles.drawerIconBox}>
+            <Ionicons name="log-out-outline" size={22} color="#ffffff" />
+          </View>
+          <Text style={styles.drawerItemText}>Logout</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+export default function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [session, setSession] = useState(null);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [destination, setDestination] = useState("hurghada");
+  const [module, setModule] = useState("dashboard");
+  const [search, setSearch] = useState("");
+  const [dashboardFilters, setDashboardFilters] = useState({ hotel: "", dateFrom: "", dateTo: "" });
+  const [dashboardSearchVersion, setDashboardSearchVersion] = useState(0);
+  const [pricingFilters, setPricingFilters] = useState({
+    hotel: "",
+    stars: "",
+    dateFrom: "",
+    dateTo: "",
+    room: "",
+    board: "",
+    price: "",
+  });
+  const [pricingSearchVersion, setPricingSearchVersion] = useState(0);
+  const [revenueFilters, setRevenueFilters] = useState({ hotel: "", dateFrom: "", dateTo: "" });
+  const [revenueSearchVersion, setRevenueSearchVersion] = useState(0);
+  const [activePricingKpi, setActivePricingKpi] = useState("total_hotels");
+  const [payload, setPayload] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [lastUpdated, setLastUpdated] = useState("");
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const manifest = document.querySelector('link[rel="manifest"]') || document.createElement("link");
+    manifest.setAttribute("rel", "manifest");
+    manifest.setAttribute("href", "/manifest.json");
+    if (!manifest.parentNode) document.head.appendChild(manifest);
+    document.title = "Khateeb";
+    const theme = document.querySelector('meta[name="theme-color"]') || document.createElement("meta");
+    theme.setAttribute("name", "theme-color");
+    theme.setAttribute("content", "#d8aa43");
+    if (!theme.parentNode) document.head.appendChild(theme);
+    const capable = document.querySelector('meta[name="apple-mobile-web-app-capable"]') || document.createElement("meta");
+    capable.setAttribute("name", "apple-mobile-web-app-capable");
+    capable.setAttribute("content", "yes");
+    if (!capable.parentNode) document.head.appendChild(capable);
+    const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]') || document.createElement("meta");
+    appleTitle.setAttribute("name", "apple-mobile-web-app-title");
+    appleTitle.setAttribute("content", "Khateeb");
+    if (!appleTitle.parentNode) document.head.appendChild(appleTitle);
+    const appleIcon = document.querySelector('link[rel="apple-touch-icon"]') || document.createElement("link");
+    appleIcon.setAttribute("rel", "apple-touch-icon");
+    appleIcon.setAttribute("href", "/app-icon.png");
+    if (!appleIcon.parentNode) document.head.appendChild(appleIcon);
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return undefined;
+    const expire = () => { setSession(null); setIsLoggedIn(false); setError("Session expired. Please sign in again."); };
+    window.addEventListener("khateeb-session-expired", expire);
+    return () => window.removeEventListener("khateeb-session-expired", expire);
+  }, []);
+
+  const visibleModules = useMemo(() => MODULES.filter(
+    (item) => !item.permission || session?.permissions?.[item.permission] !== false
+  ), [session]);
+  const visibleMainTabs = useMemo(() => MAIN_TABS.filter(
+    (item) => visibleModules.some((allowed) => allowed.key === item.key)
+  ), [visibleModules]);
+
+  const activeModuleLabel = useMemo(
+    () => MODULES.find((item) => item.key === module)?.label || module,
+    [module]
+  );
+
+  const loadData = useCallback(async () => {
+    if (!isLoggedIn) return;
+    setError("");
+    const next = {};
+
+    if (module === "smart") {
+      next.smart = await apiGet(`/api/smart-tasks${queryString({ destination, hotel: search, limit: 100 })}`);
+    } else if (module === "alerts") {
+      next.smart = await apiGet(`/api/alerts${queryString({ destination, status: search, limit: 100 })}`);
+    } else if (module === "dashboard") {
+      const dashboard = await apiGet(`/api/dashboard${queryString({ destination, hotel: dashboardFilters.hotel, date_from: dashboardFilters.dateFrom, date_to: dashboardFilters.dateTo })}`);
+      next.pricingDashboard = dashboard.pricing;
+      next.hotels = dashboard.hotels;
+      next.contractSummary = dashboard.contracts;
+      next.inhouseSummary = dashboard.inhouse;
+      next._updated_at = dashboard._updated_at;
+    } else if (module === "data") {
+      next.data = await apiGet("/api/data-center");
+    } else if (module === "availability") {
+      next.data = await apiGet(`/api/availability${queryString({ destination, hotel: search, limit: 160 })}`);
+    } else if (module === "flight") {
+      next.data = await apiGet(`/api/flights${queryString({ destination, flight: search, limit: 180 })}`);
+    } else if (module === "profile") {
+      next.profile = await apiGet("/api/profile");
+    }
+
+    setPayload(next);
+    const stamp = next._updated_at || next.data?._updated_at || next.smart?._updated_at || new Date().toISOString();
+    setLastUpdated(stamp);
+  }, [
+    destination,
+    isLoggedIn,
+    module,
+    search,
+    dashboardFilters,
+    dashboardSearchVersion,
+    pricingFilters,
+    pricingSearchVersion,
+    revenueFilters,
+    revenueSearchVersion,
+  ]);
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    loadData()
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [loadData]);
+
+  const refresh = useCallback(() => {
+    setRefreshing(true);
+    loadData()
+      .catch((err) => setError(err.message))
+      .finally(() => setRefreshing(false));
+  }, [loadData]);
+
+  const filteredRows = filterRows(payload.rows || [], search);
+  const runPricingSearch = useCallback(() => {
+    setPricingSearchVersion((value) => value + 1);
+  }, []);
+  const runDashboardSearch = useCallback(() => {
+    setDashboardSearchVersion((value) => value + 1);
+  }, []);
+  const runRevenueSearch = useCallback(() => {
+    setRevenueSearchVersion((value) => value + 1);
+  }, []);
+
+  if (!isLoggedIn) {
+    return <LoginScreen onLogin={(nextSession) => { setSession(nextSession); setIsLoggedIn(true); }} />;
+  }
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar style="light" />
+      <ScrollView
+        contentContainerStyle={styles.page}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor="#f8d77a" />}
+      >
+        <View style={styles.header}>
+          <Pressable style={styles.iconButton} onPress={() => setIsDrawerOpen(true)}>
+            <Ionicons name="menu-outline" size={24} color="#dbe3ea" />
+          </Pressable>
+          <View>
+            <Text style={styles.brand}>Khateeb</Text>
+            <Text style={styles.subtitle}>{activeModuleLabel} • {lastUpdated ? `updated ${new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "live data"}</Text>
+          </View>
+          <View style={styles.headerActions}>
+            <Pressable style={styles.iconButton} onPress={refresh}>
+              <Ionicons name="refresh-outline" size={22} color="#f8d77a" />
+            </Pressable>
+            <Pressable style={styles.iconButton}>
+              <Ionicons name="notifications-outline" size={22} color="#dbe3ea" />
+            </Pressable>
+          </View>
+        </View>
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
+          {DESTINATIONS.map((item) => (
+            <Pill key={item.key} active={destination === item.key} label={item.label} onPress={() => setDestination(item.key)} />
+          ))}
+        </ScrollView>
+
+        {module !== "dashboard" && module !== "data" && module !== "profile" && (
+          <View style={styles.searchPanel}>
+            <Text style={styles.inputLabel}>{activeModuleLabel} Search</Text>
+            <TextInput
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search hotel, room, operator, status..."
+              placeholderTextColor="#718397"
+              style={styles.input}
+            />
+          </View>
+        )}
+
+        {loading ? (
+          <LoadingSkeleton />
+        ) : error ? (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorTitle}>API connection failed</Text>
+            <Text style={styles.errorText}>{error}</Text>
+            <Text style={styles.errorText}>Make sure the API is running on {API_BASE_URL}</Text>
+            <Pressable style={styles.retryButton} onPress={refresh}><Text style={styles.retryButtonText}>Try again</Text></Pressable>
+          </View>
+        ) : (
+          <>
+            {module === "smart" && <SmartTasksView data={payload.smart} />}
+            {module === "alerts" && <SmartTasksView data={payload.smart} />}
+            {module === "dashboard" && (
+              <DashboardView
+                pricingDashboard={payload.pricingDashboard}
+                contractSummary={payload.contractSummary}
+                inhouseSummary={payload.inhouseSummary}
+                hotelOptions={payload.hotels?.hotels || payload.hotels || []}
+                filters={dashboardFilters}
+                setFilters={setDashboardFilters}
+                onSearch={runDashboardSearch}
+                onClear={() => {
+                  setDashboardFilters({ hotel: "", dateFrom: "", dateTo: "" });
+                  setDashboardSearchVersion((value) => value + 1);
+                }}
+              />
+            )}
+            {module === "data" && <DataCenterView data={payload.data} />}
+            {module === "availability" && <AvailabilityView data={payload.data} />}
+            {module === "flight" && <OperationalOverviewView data={payload.data} type="flight" title="Flight Intelligence" />}
+            {module === "profile" && <ProfileView session={{ ...session, user: payload.profile || session?.user }} />}
+          </>
+        )}
+      </ScrollView>
+      <View style={styles.bottomNav}>
+        {visibleMainTabs.map((item) => (
+          <BottomTab
+            key={item.key}
+            active={module === item.key}
+            label={item.label}
+            icon={TAB_ICONS[item.key]}
+            onPress={() => setModule(item.key)}
+          />
+        ))}
+      </View>
+      {isDrawerOpen && (
+        <DrawerMenu
+          activeModule={module}
+          items={visibleModules}
+          session={session}
+          onClose={() => setIsDrawerOpen(false)}
+          onNavigate={(nextModule) => {
+            setModule(nextModule);
+            setIsDrawerOpen(false);
+          }}
+          onLogout={() => {
+            apiLogout();
+            setIsDrawerOpen(false);
+            setSession(null);
+            setIsLoggedIn(false);
+          }}
+        />
+      )}
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  loginExactSafeArea: {
+    flex: 1,
+    backgroundColor: "#000000",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginExactFrame: {
+    height: "100%",
+    maxHeight: 1096,
+    maxWidth: Platform.OS === "web" ? 430 : undefined,
+    aspectRatio: 518 / 1096,
+    alignSelf: "center",
+  },
+  loginExactImage: {
+    width: "100%",
+    height: "100%",
+  },
+  loginLiveStatusBar: {
+    position: "absolute",
+    top: "0.5%",
+    left: "2%",
+    width: "96%",
+    height: "6.2%",
+    paddingHorizontal: "7.5%",
+    backgroundColor: "#f8f6f3",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    zIndex: 5,
+  },
+  loginLiveTime: {
+    color: "#0b1117",
+    fontFamily: APP_FONT,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  loginLiveIndicators: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  loginSignalBars: {
+    height: 15,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 2,
+  },
+  loginSignalBar: {
+    width: 3,
+    borderRadius: 2,
+    backgroundColor: "#0b1117",
+  },
+  loginBatteryShell: {
+    width: 24,
+    height: 12,
+    padding: 2,
+    borderWidth: 1.5,
+    borderColor: "#0b1117",
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  loginBatteryFill: {
+    height: "100%",
+    borderRadius: 1,
+  },
+  loginBatteryTip: {
+    width: 2,
+    height: 5,
+    marginLeft: -5,
+    borderRadius: 1,
+    backgroundColor: "#0b1117",
+  },
+  loginBatteryText: {
+    color: "#0b1117",
+    fontFamily: APP_FONT,
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  loginExactInput: {
+    position: "absolute",
+    left: "20%",
+    width: "63%",
+    height: "4.7%",
+    color: "#eef4f8",
+    fontFamily: APP_FONT,
+    fontSize: 15,
+    fontWeight: "400",
+    paddingVertical: 0,
+    outlineStyle: "none",
+    backgroundColor: "transparent",
+  },
+  loginExactUsername: {
+    top: "50.2%",
+  },
+  loginExactPassword: {
+    top: "60.3%",
+  },
+  loginExactEye: {
+    position: "absolute",
+    left: "81.5%",
+    top: "61.1%",
+    width: "7%",
+    height: "3.7%",
+  },
+  loginExactRemember: {
+    position: "absolute",
+    left: "9.3%",
+    top: "67%",
+    width: "5%",
+    height: "2.5%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginExactError: {
+    position: "absolute",
+    left: "9.5%",
+    top: "70.1%",
+    width: "81%",
+    color: "#ffb3a8",
+    fontFamily: APP_FONT,
+    fontSize: 12,
+    textAlign: "center",
+  },
+  loginExactButton: {
+    position: "absolute",
+    left: "9.3%",
+    top: "71.2%",
+    width: "82.5%",
+    height: "5.7%",
+  },
+  loginSafeArea: {
+    flex: 1,
+    backgroundColor: "#f4efe5",
+    alignItems: "center",
+  },
+  loginScene: {
+    flex: 1,
+    width: "100%",
+    maxWidth: Platform.OS === "web" ? 430 : undefined,
+    backgroundColor: "#f4efe5",
+    overflow: "hidden",
+  },
+  loginSky: {
+    minHeight: 330,
+    alignItems: "center",
+    paddingTop: 28,
+    paddingHorizontal: 22,
+    backgroundColor: "#fbfaf7",
+  },
+  loginBell: {
+    position: "absolute",
+    right: 24,
+    top: 28,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginLogo: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 1,
+    borderColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 18,
+    marginBottom: 10,
+  },
+  loginLogoText: {
+    fontFamily: APP_FONT,
+    color: "#d8aa43",
+    fontSize: 21,
+    fontWeight: "300",
+  },
+  loginBrand: {
+    fontFamily: APP_FONT,
+    color: "#172635",
+    fontSize: 15,
+    fontWeight: "600",
+    marginBottom: 28,
+  },
+  loginWelcome: {
+    fontFamily: APP_FONT,
+    color: "#172635",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  loginSub: {
+    fontFamily: APP_FONT,
+    color: "#465566",
+    fontSize: 12,
+    marginTop: 4,
+  },
+  loginWater: {
+    flex: 1,
+    marginTop: -72,
+    backgroundColor: "#132332",
+    borderTopLeftRadius: 36,
+    borderTopRightRadius: 36,
+    paddingTop: 34,
+    paddingHorizontal: 18,
+  },
+  loginPanel: {
+    width: "100%",
+  },
+  loginLabel: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    fontSize: 11,
+    fontWeight: "600",
+    marginBottom: 6,
+    marginTop: 10,
+  },
+  loginInput: {
+    fontFamily: APP_FONT,
+    height: 42,
+    borderRadius: 7,
+    backgroundColor: "#f7fafc",
+    color: "#172635",
+    paddingHorizontal: 12,
+    fontSize: 13,
+    outlineStyle: "none",
+  },
+  loginPasswordWrap: {
+    height: 42,
+    borderRadius: 7,
+    backgroundColor: "#f7fafc",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingLeft: 12,
+  },
+  loginPasswordInput: {
+    fontFamily: APP_FONT,
+    flex: 1,
+    color: "#172635",
+    fontSize: 13,
+    outlineStyle: "none",
+  },
+  loginEye: {
+    width: 38,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginOptions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 12,
+  },
+  loginRemember: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  loginCheck: {
+    width: 14,
+    height: 14,
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loginCheckActive: {
+    backgroundColor: "#d8aa43",
+  },
+  loginOptionText: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    fontSize: 11,
+  },
+  loginForgot: {
+    fontFamily: APP_FONT,
+    color: "#d8aa43",
+    fontSize: 11,
+  },
+  loginError: {
+    fontFamily: APP_FONT,
+    color: "#ffb3a8",
+    fontSize: 12,
+    marginTop: 10,
+  },
+  loginButton: {
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 14,
+  },
+  loginButtonText: {
+    fontFamily: APP_FONT,
+    color: "#172635",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  loginDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginVertical: 18,
+  },
+  loginDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: "rgba(231, 238, 245, 0.18)",
+  },
+  loginDividerText: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    fontSize: 11,
+  },
+  loginBiometricRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  loginBioButton: {
+    flex: 1,
+    height: 58,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(231, 238, 245, 0.13)",
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+  loginBioText: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    fontSize: 11,
+  },
+  loginFooter: {
+    fontFamily: APP_FONT,
+    color: "#e7eef5",
+    textAlign: "center",
+    fontSize: 11,
+    marginTop: 22,
+  },
+  drawerOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 50,
+    flexDirection: "row",
+  },
+  drawerBackdrop: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: "rgba(7, 12, 18, 0.36)",
+  },
+  drawerPanel: {
+    width: "72%",
+    maxWidth: 310,
+    marginTop: 10,
+    marginLeft: 10,
+    borderRadius: 16,
+    backgroundColor: "#111a26",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+    paddingHorizontal: 16,
+    paddingTop: 20,
+    paddingBottom: 18,
+    shadowColor: "#000000",
+    shadowOpacity: 0.32,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 18 },
+    elevation: 12,
+  },
+  drawerProfile: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  drawerAvatar: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  drawerAvatarText: {
+    fontFamily: APP_FONT,
+    color: "#ffffff",
+    fontSize: 24,
+    fontWeight: "800",
+  },
+  drawerName: {
+    fontFamily: APP_FONT,
+    color: "#f4f7fb",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  drawerRole: {
+    fontFamily: APP_FONT,
+    color: "#aab3bf",
+    fontSize: 12,
+    marginTop: 3,
+    fontWeight: "500",
+  },
+  drawerDivider: {
+    height: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    marginVertical: 16,
+  },
+  drawerItems: {
+    gap: 8,
+  },
+  drawerItem: {
+    minHeight: 50,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 6,
+  },
+  drawerItemActive: {
+    backgroundColor: "#17253a",
+    borderWidth: 1,
+    borderColor: "rgba(216, 170, 67, 0.10)",
+  },
+  drawerIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 11,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  drawerIconBoxActive: {
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+  },
+  drawerItemText: {
+    fontFamily: APP_FONT,
+    color: "#f4f7fb",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  drawerItemTextActive: {
+    color: "#d8aa43",
+  },
+  drawerLogout: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 6,
+  },
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#f5f1e8",
+  },
+  page: {
+    width: "100%",
+    maxWidth: Platform.OS === "web" ? 430 : undefined,
+    alignSelf: "center",
+    padding: 16,
+    paddingBottom: 104,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingTop: 8,
+    paddingBottom: 12,
+  },
+  headerActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  iconButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brand: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 24,
+    fontWeight: "300",
+  },
+  subtitle: {
+    fontFamily: APP_FONT,
+    color: "#7b8794",
+    fontSize: 13,
+    fontWeight: "300",
+    marginTop: 3,
+  },
+  refreshButton: {
+    minWidth: 96,
+    height: 42,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(248, 215, 122, 0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(17, 34, 51, 0.78)",
+  },
+  refreshText: {
+    fontFamily: APP_FONT,
+    color: "#f8d77a",
+    fontWeight: "300",
+  },
+  bottomNav: {
+    position: "absolute",
+    left: Platform.OS === "web" ? "50%" : 10,
+    right: Platform.OS === "web" ? undefined : 10,
+    bottom: 10,
+    width: Platform.OS === "web" ? "calc(100% - 20px)" : undefined,
+    maxWidth: 430,
+    transform: Platform.OS === "web" ? [{ translateX: -215 }] : [],
+    minHeight: 66,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(116, 143, 170, 0.28)",
+    backgroundColor: "rgba(255, 255, 255, 0.96)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-around",
+    paddingHorizontal: 6,
+    paddingVertical: 8,
+  },
+  bottomTab: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 3,
+  },
+  bottomTabText: {
+    fontFamily: APP_FONT,
+    color: "#7e8b99",
+    fontSize: 11,
+    fontWeight: "300",
+  },
+  bottomTabTextActive: {
+    color: "#d8aa43",
+  },
+  pillRow: {
+    gap: 8,
+    paddingVertical: 6,
+  },
+  pill: {
+    height: 42,
+    minWidth: 132,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 12,
+  },
+  pillActive: {
+    borderColor: "#d8aa43",
+    backgroundColor: "#f3dfad",
+  },
+  dot: {
+    width: 12,
+    height: 12,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: "#e6e0d4",
+    backgroundColor: "#d5d9df",
+  },
+  dotActive: {
+    backgroundColor: "#d8aa43",
+    borderColor: "#fff8e5",
+  },
+  pillText: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontWeight: "300",
+    fontSize: 13,
+  },
+  pillTextActive: {
+    color: "#1b2430",
+  },
+  searchPanel: {
+    marginTop: 8,
+    marginBottom: 14,
+  },
+  pricingSearchBox: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    padding: 14,
+    marginBottom: 14,
+  },
+  searchGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  searchField: {
+    flexGrow: 1,
+    flexBasis: "47%",
+    minWidth: 150,
+  },
+  searchFieldWide: {
+    flexGrow: 2,
+    flexBasis: "62%",
+    minWidth: 230,
+    position: "relative",
+  },
+  suggestionBox: {
+    position: "absolute",
+    top: 74,
+    left: 0,
+    right: 0,
+    zIndex: 30,
+    maxHeight: 88,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    overflow: "hidden",
+    shadowColor: "#000000",
+    shadowOpacity: 0.10,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+  },
+  suggestionItem: {
+    minHeight: 30,
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(116, 143, 170, 0.16)",
+  },
+  suggestionText: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontWeight: "300",
+  },
+  searchActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 16,
+    marginBottom: 2,
+  },
+  searchButton: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "#d8aa43",
+    borderWidth: 1,
+    borderColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchButtonText: {
+    fontFamily: APP_FONT,
+    color: "#ffffff",
+    fontWeight: "300",
+  },
+  clearButton: {
+    minWidth: 96,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  clearButtonText: {
+    fontFamily: APP_FONT,
+    color: "#d8aa43",
+    fontWeight: "300",
+  },
+  contractClearButton: {
+    flexGrow: 0,
+    minWidth: 120,
+    alignSelf: "flex-start",
+  },
+  inputLabel: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 13,
+    fontWeight: "300",
+    marginBottom: 6,
+  },
+  input: {
+    fontFamily: APP_FONT,
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#f8f8f6",
+    color: "#1b2430",
+    paddingHorizontal: 14,
+    fontWeight: "300",
+  },
+  statsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginBottom: 10,
+  },
+  dashboardTitle: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 22,
+    fontWeight: "300",
+    marginBottom: 12,
+  },
+  homeIntro: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 12,
+  },
+  greetingText: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 15,
+    fontWeight: "300",
+  },
+  greetingSub: {
+    fontFamily: APP_FONT,
+    color: "#8a94a1",
+    fontSize: 12,
+    fontWeight: "300",
+    marginTop: 3,
+  },
+  destinationChip: {
+    minHeight: 38,
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+  },
+  destinationChipText: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 12,
+    fontWeight: "300",
+  },
+  homeKpiGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginBottom: 12,
+  },
+  mobileScreenHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  mobileScreenTitle: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 18,
+    fontWeight: "300",
+  },
+  roundIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchBar: {
+    height: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+  },
+  searchBarInput: {
+    fontFamily: APP_FONT,
+    flex: 1,
+    color: "#1b2430",
+    fontWeight: "300",
+    outlineStyle: "none",
+  },
+  pricingTopSuggestions: {
+    marginTop: -4,
+    marginBottom: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    overflow: "hidden",
+  },
+  pricingFiltersBox: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 16,
+    marginBottom: 14,
+  },
+  pricingFiltersGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  pricingFilterField: {
+    flexGrow: 1,
+    flexBasis: "47%",
+    minWidth: 142,
+    position: "relative",
+    zIndex: 4,
+  },
+  pricingFilterFieldFull: {
+    flexBasis: "auto",
+    width: "100%",
+    minWidth: 0,
+    alignSelf: "stretch",
+    marginBottom: 10,
+  },
+  revenueDateGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 10,
+  },
+  filterChipsRow: {
+    gap: 8,
+    paddingBottom: 10,
+  },
+  filterChip: {
+    height: 34,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  filterChipText: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 11,
+    fontWeight: "300",
+  },
+  pricingKpiGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 10,
+  },
+  kpiSectionHeader: {
+    minHeight: 48,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    marginTop: 10,
+    marginBottom: 8,
+  },
+  kpiSectionTitle: {
+    fontFamily: APP_FONT,
+    color: "#d8bd69",
+    fontSize: 16,
+    fontWeight: "300",
+    textTransform: "uppercase",
+  },
+  kpiGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 10,
+  },
+  kpiTile: {
+    flexGrow: 1,
+    flexBasis: "47%",
+    minWidth: 165,
+    minHeight: 86,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  kpiTileActive: {
+    borderColor: "rgba(248, 215, 122, 0.7)",
+    backgroundColor: "#fff6df",
+  },
+  kpiIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 24,
+    borderWidth: 2,
+    borderColor: "#86b96e",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  kpiIconRed: {
+    borderColor: "#ff6f67",
+  },
+  kpiIconBlue: {
+    borderColor: "#6ca0ff",
+  },
+  kpiIconText: {
+    fontFamily: APP_FONT,
+    color: "#f8d77a",
+    fontWeight: "300",
+    fontSize: 17,
+  },
+  kpiBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  noticeBar: {
+    minHeight: 42,
+    borderRadius: 7,
+    backgroundColor: "rgba(31, 51, 75, 0.96)",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    marginTop: -2,
+    marginBottom: 10,
+  },
+  noticeText: {
+    fontFamily: APP_FONT,
+    color: "#d5dee8",
+    fontWeight: "300",
+  },
+  statCard: {
+    flexGrow: 1,
+    flexBasis: "47%",
+    minWidth: 150,
+    minHeight: 90,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    padding: 13,
+    justifyContent: "space-between",
+  },
+  statLabel: {
+    fontFamily: APP_FONT,
+    color: "#7b8794",
+    fontWeight: "300",
+  },
+  statValue: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 25,
+    fontWeight: "300",
+  },
+  statSub: {
+    fontFamily: APP_FONT,
+    color: "#9aa3ad",
+    fontSize: 12,
+    fontWeight: "300",
+  },
+  goldText: {
+    color: "#d8aa43",
+  },
+  section: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    padding: 14,
+    marginTop: 10,
+  },
+  sectionTitle: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 16,
+    fontWeight: "300",
+    marginBottom: 8,
+  },
+  infoRow: {
+    minHeight: 58,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(27, 36, 48, 0.08)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  infoBody: {
+    flex: 1,
+    minWidth: 0,
+    paddingVertical: 8,
+  },
+  infoTitle: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontWeight: "300",
+    fontSize: 14,
+  },
+  infoSub: {
+    fontFamily: APP_FONT,
+    color: "#7b8794",
+    fontWeight: "300",
+    marginTop: 3,
+    fontSize: 12,
+  },
+  infoRight: {
+    fontFamily: APP_FONT,
+    color: "#d8aa43",
+    fontWeight: "300",
+    maxWidth: 110,
+  },
+  pricingResultCard: {
+    borderTopWidth: 1,
+    borderTopColor: "rgba(116, 143, 170, 0.18)",
+    paddingVertical: 12,
+  },
+  pricingHotelName: {
+    fontFamily: APP_FONT,
+    color: "#f8d77a",
+    fontSize: 16,
+    fontWeight: "300",
+    marginBottom: 10,
+  },
+  pricingResultGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  pricingResultItem: {
+    flexGrow: 1,
+    flexBasis: "47%",
+    minWidth: 145,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(116, 143, 170, 0.22)",
+    backgroundColor: "rgba(17, 34, 51, 0.56)",
+    padding: 10,
+  },
+  pricingResultLabel: {
+    fontFamily: APP_FONT,
+    color: "#8fa1b2",
+    fontSize: 11,
+    fontWeight: "300",
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
+  pricingResultValue: {
+    fontFamily: APP_FONT,
+    color: "#e9eef4",
+    fontSize: 14,
+    fontWeight: "300",
+  },
+  pricingListCard: {
+    minHeight: 94,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(27, 36, 48, 0.08)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 11,
+  },
+  hotelThumb: {
+    width: 58,
+    height: 58,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(216, 170, 67, 0.34)",
+    backgroundColor: "rgba(216, 170, 67, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pricingListBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  pricingListHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  pricingListHotel: {
+    fontFamily: APP_FONT,
+    flex: 1,
+    color: "#1b2430",
+    fontSize: 14,
+    fontWeight: "300",
+  },
+  ratingText: {
+    fontFamily: APP_FONT,
+    color: "#d8aa43",
+    fontSize: 10,
+    fontWeight: "300",
+  },
+  pricingListMeta: {
+    fontFamily: APP_FONT,
+    color: "#95a5b6",
+    fontSize: 11,
+    fontWeight: "300",
+    marginTop: 4,
+  },
+  priceMiniGrid: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 8,
+    marginTop: 8,
+  },
+  miniLabel: {
+    fontFamily: APP_FONT,
+    color: "#7f90a3",
+    fontSize: 10,
+    fontWeight: "300",
+  },
+  miniValue: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 12,
+    fontWeight: "300",
+    marginTop: 2,
+  },
+  statusBadge: {
+    minWidth: 58,
+    borderRadius: 999,
+    backgroundColor: "rgba(216, 170, 67, 0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(216, 170, 67, 0.34)",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    alignItems: "center",
+  },
+  statusBadgeText: {
+    fontFamily: APP_FONT,
+    color: "#d8aa43",
+    fontSize: 9,
+    fontWeight: "300",
+  },
+  inhouseCardsWrap: {
+    gap: 10,
+    marginBottom: 10,
+  },
+  inhouseCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(116, 143, 170, 0.34)",
+    backgroundColor: "rgba(15, 30, 46, 0.9)",
+    padding: 12,
+  },
+  inhouseCardTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  inhouseHotelBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  inhouseHotelName: {
+    fontFamily: APP_FONT,
+    color: "#f8d77a",
+    fontSize: 16,
+    fontWeight: "300",
+  },
+  inhouseMeta: {
+    fontFamily: APP_FONT,
+    color: "#95a5b6",
+    fontSize: 12,
+    fontWeight: "300",
+    marginTop: 4,
+  },
+  inhouseScoreBox: {
+    minWidth: 86,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(248, 215, 122, 0.34)",
+    backgroundColor: "rgba(248, 215, 122, 0.08)",
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    alignItems: "center",
+  },
+  inhouseScore: {
+    fontFamily: APP_FONT,
+    color: "#f8d77a",
+    fontSize: 20,
+    fontWeight: "300",
+  },
+  inhouseScoreLabel: {
+    fontFamily: APP_FONT,
+    color: "#9fb0bf",
+    fontSize: 10,
+    fontWeight: "300",
+    marginTop: 2,
+  },
+  inhouseProgressTrack: {
+    height: 10,
+    borderRadius: 99,
+    backgroundColor: "rgba(116, 143, 170, 0.18)",
+    overflow: "hidden",
+    marginTop: 12,
+  },
+  inhouseProgressFill: {
+    height: "100%",
+    borderRadius: 99,
+  },
+  inhouseProgressGood: {
+    backgroundColor: "#84c988",
+  },
+  inhouseProgressBad: {
+    backgroundColor: "#ff6f67",
+  },
+  inhouseMonthGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+  },
+  inhouseMonthBox: {
+    flexGrow: 1,
+    flexBasis: "18%",
+    minWidth: 88,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(116, 143, 170, 0.24)",
+    backgroundColor: "rgba(17, 34, 51, 0.62)",
+    padding: 9,
+  },
+  inhouseMonthLabel: {
+    fontFamily: APP_FONT,
+    color: "#f8d77a",
+    fontSize: 11,
+    fontWeight: "300",
+    marginBottom: 4,
+  },
+  inhouseMonthValue: {
+    fontFamily: APP_FONT,
+    color: "#e9eef4",
+    fontSize: 14,
+    fontWeight: "300",
+  },
+  inhouseMonthDiff: {
+    fontFamily: APP_FONT,
+    fontSize: 11,
+    fontWeight: "300",
+    marginTop: 3,
+  },
+  positiveText: {
+    color: "#91d49a",
+  },
+  negativeText: {
+    color: "#e97b7b",
+  },
+  taskCard: {
+    borderTopWidth: 1,
+    borderTopColor: "rgba(116, 143, 170, 0.2)",
+    paddingVertical: 12,
+  },
+  taskHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  taskPriority: {
+    fontFamily: APP_FONT,
+    color: "#f8d77a",
+    fontWeight: "300",
+    fontSize: 12,
+  },
+  criticalText: {
+    color: "#ff6f67",
+  },
+  taskScore: {
+    fontFamily: APP_FONT,
+    color: "#f8d77a",
+    fontWeight: "300",
+    fontSize: 12,
+  },
+  taskTitle: {
+    fontFamily: APP_FONT,
+    color: "#ffffff",
+    fontSize: 17,
+    fontWeight: "300",
+    marginTop: 8,
+  },
+  taskLine: {
+    fontFamily: APP_FONT,
+    color: "#d3dce5",
+    fontWeight: "300",
+    marginTop: 6,
+  },
+  reportGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 8,
+  },
+  reportButton: {
+    flexGrow: 1,
+    flexBasis: "47%",
+    height: 46,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(248, 215, 122, 0.35)",
+    backgroundColor: "rgba(248, 215, 122, 0.08)",
+    flexDirection: "row",
+    gap: 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reportButton_excel: {
+    borderColor: "rgba(21, 115, 71, 0.28)",
+    backgroundColor: "rgba(21, 115, 71, 0.08)",
+  },
+  reportButton_pdf: {
+    borderColor: "rgba(192, 57, 43, 0.28)",
+    backgroundColor: "rgba(192, 57, 43, 0.08)",
+  },
+  reportButtonText: {
+    fontFamily: APP_FONT,
+    color: "#f8d77a",
+    fontWeight: "300",
+  },
+  reportButtonText_excel: {
+    color: "#157347",
+  },
+  reportButtonText_pdf: {
+    color: "#c0392b",
+  },
+  contractReportBox: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 14,
+  },
+  mailButton: {
+    flexGrow: 1,
+    flexBasis: "100%",
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(216, 170, 67, 0.28)",
+    backgroundColor: "rgba(216, 170, 67, 0.12)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+  mailButtonText: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontWeight: "400",
+  },
+  mailPanel: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#ffffff",
+    padding: 12,
+    gap: 10,
+    marginTop: 2,
+    marginBottom: 14,
+  },
+  savedMailRow: {
+    gap: 8,
+    paddingVertical: 2,
+  },
+  savedMailChip: {
+    minHeight: 30,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(216, 170, 67, 0.25)",
+    backgroundColor: "rgba(216, 170, 67, 0.08)",
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  savedMailText: {
+    fontFamily: APP_FONT,
+    color: "#1b2430",
+    fontSize: 12,
+  },
+  mailFormatRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  mailFormatButton: {
+    flex: 1,
+    height: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(27, 36, 48, 0.08)",
+    backgroundColor: "#f8f8f6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mailFormatButtonActiveExcel: {
+    borderColor: "rgba(21, 115, 71, 0.35)",
+    backgroundColor: "rgba(21, 115, 71, 0.10)",
+  },
+  mailFormatButtonActivePdf: {
+    borderColor: "rgba(192, 57, 43, 0.35)",
+    backgroundColor: "rgba(192, 57, 43, 0.10)",
+  },
+  mailFormatText: {
+    fontFamily: APP_FONT,
+    color: "#718397",
+    fontWeight: "400",
+  },
+  mailFormatTextExcel: {
+    color: "#157347",
+  },
+  mailFormatTextPdf: {
+    color: "#c0392b",
+  },
+  sendMailConfirm: {
+    height: 42,
+    borderRadius: 10,
+    backgroundColor: "#d8aa43",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyBox: {
+    minHeight: 74,
+    alignItems: "center",
+    justifyContent: "center",
+    borderTopWidth: 1,
+    borderTopColor: "rgba(116, 143, 170, 0.18)",
+  },
+  emptyText: {
+    fontFamily: APP_FONT,
+    color: "#9fb0bf",
+    fontWeight: "300",
+  },
+  loadingBox: {
+    minHeight: 240,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+  },
+  skeletonWrap: {
+    minHeight: 260,
+    gap: 12,
+    paddingVertical: 12,
+  },
+  skeletonCard: {
+    height: 82,
+    borderRadius: 18,
+    backgroundColor: "#ebe2d1",
+    borderWidth: 1,
+    borderColor: "#e0d3bc",
+  },
+  retryButton: {
+    alignSelf: "center",
+    marginTop: 14,
+    borderRadius: 14,
+    backgroundColor: "#d8aa43",
+    paddingHorizontal: 24,
+    paddingVertical: 11,
+  },
+  retryButtonText: {
+    color: "#18212b",
+    fontWeight: "700",
+  },
+  loadingText: {
+    fontFamily: APP_FONT,
+    color: "#aeb9c5",
+    fontWeight: "300",
+  },
+  errorBox: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255, 99, 99, 0.45)",
+    backgroundColor: "rgba(80, 20, 24, 0.35)",
+    padding: 14,
+  },
+  errorTitle: {
+    fontFamily: APP_FONT,
+    color: "#ff9a9a",
+    fontSize: 16,
+    fontWeight: "300",
+    marginBottom: 6,
+  },
+  errorText: {
+    fontFamily: APP_FONT,
+    color: "#ffd0d0",
+    fontWeight: "300",
+    marginTop: 3,
+  },
+});

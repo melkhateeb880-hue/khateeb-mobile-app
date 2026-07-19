@@ -15,10 +15,8 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-import { API_BASE_URL, apiGet, queryString } from "./api";
+import { API_BASE_URL, apiGet, apiLogin, apiLogout, queryString } from "./services/api";
 const APP_FONT = Platform.OS === "web" ? "Segoe UI Light, Segoe UI, Arial" : "sans-serif-light";
-const LOGIN_USER = "admin";
-const LOGIN_PASSWORD = "Rahim159357";
 
 const DESTINATIONS = [
   { key: "hurghada", label: "Hurghada" },
@@ -26,27 +24,23 @@ const DESTINATIONS = [
 ];
 
 const MODULES = [
-  { key: "dashboard", label: "Home" },
-  { key: "pricing", label: "Pricing" },
-  { key: "turnover", label: "Revenue" },
-  { key: "contracts", label: "Contract Situation" },
-  { key: "smart", label: "Tasks" },
-  { key: "availability", label: "Availability" },
-  { key: "inhouse", label: "Inhouse" },
-  { key: "stopsale", label: "Stop Sale" },
-  { key: "target", label: "Target" },
-  { key: "flight", label: "Flight Intelligence" },
-  { key: "data", label: "Data Center / Reports" },
+  { key: "dashboard", label: "Home", permission: "dashboard", icon: "home-outline" },
+  { key: "availability", label: "Availability", permission: "availability_monitor", icon: "calendar-outline" },
+  { key: "flight", label: "Flight Intelligence", permission: "flight_intelligence", icon: "airplane-outline" },
+  { key: "smart", label: "Smart Tasks", permission: "smart_tasks", icon: "checkmark-circle-outline" },
+  { key: "alerts", label: "Alerts", permission: "smart_tasks", icon: "notifications-outline" },
+  { key: "data", label: "Data Center", permission: "data_hub", icon: "server-outline" },
+  { key: "profile", label: "Profile", icon: "person-outline" },
 ];
 
 const MAIN_TABS = MODULES.slice(0, 5);
 
 const TAB_ICONS = {
   dashboard: "home-outline",
-  pricing: "pricetag-outline",
-  turnover: "bar-chart-outline",
-  contracts: "document-text-outline",
+  availability: "calendar-outline",
+  flight: "airplane-outline",
   smart: "checkmark-circle-outline",
+  alerts: "notifications-outline",
 };
 
 function formatNumber(value) {
@@ -146,6 +140,30 @@ function EmptyState({ message }) {
     <View style={styles.emptyBox}>
       <Text style={styles.emptyText}>{message}</Text>
     </View>
+  );
+}
+
+function LoadingSkeleton() {
+  return (
+    <View style={styles.skeletonWrap}>
+      {[0, 1, 2].map((item) => <View key={item} style={styles.skeletonCard} />)}
+      <Text style={styles.loadingText}>Loading live data...</Text>
+    </View>
+  );
+}
+
+function ProfileView({ session }) {
+  const user = session?.user || {};
+  const allowed = MODULES.filter((item) => !item.permission || session?.permissions?.[item.permission] !== false);
+  return (
+    <>
+      <Section title="Account">
+        <InfoRow title={user.full_name || user.username || "Khateeb user"} subtitle={user.email || "Revenue Control Center account"} right={user.role || "User"} accent />
+      </Section>
+      <Section title="Allowed modules">
+        {allowed.map((item) => <InfoRow key={item.key} title={item.label} subtitle="Access granted by Revenue Control Center" />)}
+      </Section>
+    </>
   );
 }
 
@@ -1311,15 +1329,21 @@ function LoginScreen({ onLogin }) {
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [loginError, setLoginError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const submitLogin = useCallback(() => {
-    if (username.trim() === LOGIN_USER && password === LOGIN_PASSWORD) {
+  const submitLogin = useCallback(async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const session = await apiLogin(username.trim(), password);
       setLoginError("");
-      onLogin();
-      return;
+      onLogin(session);
+    } catch (error) {
+      setLoginError(error.message || "Invalid username or password");
+    } finally {
+      setSubmitting(false);
     }
-    setLoginError("Invalid username or password");
-  }, [onLogin, password, username]);
+  }, [onLogin, password, submitting, username]);
 
   return (
     <SafeAreaView style={styles.loginExactSafeArea}>
@@ -1359,36 +1383,24 @@ function LoginScreen({ onLogin }) {
           {rememberMe && <Ionicons name="checkmark" size={14} color="#d8aa43" />}
         </Pressable>
         {!!loginError && <Text style={styles.loginExactError}>{loginError}</Text>}
-        <Pressable accessibilityLabel="Login" style={styles.loginExactButton} onPress={submitLogin} />
+        <Pressable accessibilityLabel="Login" disabled={submitting} style={styles.loginExactButton} onPress={submitLogin} />
       </ImageBackground>
     </SafeAreaView>
   );
 }
 
-function DrawerMenu({ activeModule, onNavigate, onClose, onLogout }) {
-  const items = [
-    { label: "Home", icon: "home-outline", module: "dashboard" },
-    { label: "Availability", icon: "calendar-outline", module: "availability" },
-    { label: "Inhouse", icon: "bed-outline", module: "inhouse" },
-    { label: "Stop Sale", icon: "ban-outline", module: "stopsale" },
-    { label: "Target", icon: "speedometer-outline", module: "target" },
-    { label: "Flight Intelligence", icon: "airplane-outline", module: "flight" },
-    { label: "Contract Situation", icon: "document-text-outline", module: "contracts" },
-    { label: "Alert Center", icon: "notifications-outline", module: "smart" },
-    { label: "Data Center / Reports", icon: "server-outline", module: "data" },
-  ];
-
+function DrawerMenu({ activeModule, items, session, onNavigate, onClose, onLogout }) {
   return (
     <View style={styles.drawerOverlay}>
       <Pressable style={styles.drawerBackdrop} onPress={onClose} />
       <View style={styles.drawerPanel}>
         <View style={styles.drawerProfile}>
           <View style={styles.drawerAvatar}>
-            <Text style={styles.drawerAvatarText}>ME</Text>
+            <Text style={styles.drawerAvatarText}>{(session?.user?.full_name || session?.user?.username || "K").slice(0, 2).toUpperCase()}</Text>
           </View>
           <View>
-            <Text style={styles.drawerName}>Mahmoud Elkhateeb</Text>
-            <Text style={styles.drawerRole}>Admin</Text>
+            <Text style={styles.drawerName}>{session?.user?.full_name || session?.user?.username || "Khateeb"}</Text>
+            <Text style={styles.drawerRole}>{session?.user?.role || "User"}</Text>
           </View>
         </View>
 
@@ -1396,12 +1408,12 @@ function DrawerMenu({ activeModule, onNavigate, onClose, onLogout }) {
 
         <View style={styles.drawerItems}>
           {items.map((item) => {
-            const active = item.module && activeModule === item.module;
+            const active = activeModule === item.key;
             return (
               <Pressable
-                key={item.label}
+                key={item.key}
                 style={[styles.drawerItem, active && styles.drawerItemActive]}
-                onPress={() => item.module && onNavigate(item.module)}
+                onPress={() => onNavigate(item.key)}
               >
                 <View style={[styles.drawerIconBox, active && styles.drawerIconBoxActive]}>
                   <Ionicons name={item.icon} size={22} color={active ? "#d8aa43" : "#ffffff"} />
@@ -1427,6 +1439,7 @@ function DrawerMenu({ activeModule, onNavigate, onClose, onLogout }) {
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [session, setSession] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [destination, setDestination] = useState("hurghada");
   const [module, setModule] = useState("dashboard");
@@ -1450,6 +1463,49 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [lastUpdated, setLastUpdated] = useState("");
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const manifest = document.querySelector('link[rel="manifest"]') || document.createElement("link");
+    manifest.setAttribute("rel", "manifest");
+    manifest.setAttribute("href", "/manifest.json");
+    if (!manifest.parentNode) document.head.appendChild(manifest);
+    document.title = "Khateeb";
+    const theme = document.querySelector('meta[name="theme-color"]') || document.createElement("meta");
+    theme.setAttribute("name", "theme-color");
+    theme.setAttribute("content", "#d8aa43");
+    if (!theme.parentNode) document.head.appendChild(theme);
+    const capable = document.querySelector('meta[name="apple-mobile-web-app-capable"]') || document.createElement("meta");
+    capable.setAttribute("name", "apple-mobile-web-app-capable");
+    capable.setAttribute("content", "yes");
+    if (!capable.parentNode) document.head.appendChild(capable);
+    const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]') || document.createElement("meta");
+    appleTitle.setAttribute("name", "apple-mobile-web-app-title");
+    appleTitle.setAttribute("content", "Khateeb");
+    if (!appleTitle.parentNode) document.head.appendChild(appleTitle);
+    const appleIcon = document.querySelector('link[rel="apple-touch-icon"]') || document.createElement("link");
+    appleIcon.setAttribute("rel", "apple-touch-icon");
+    appleIcon.setAttribute("href", "/app-icon.png");
+    if (!appleIcon.parentNode) document.head.appendChild(appleIcon);
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return undefined;
+    const expire = () => { setSession(null); setIsLoggedIn(false); setError("Session expired. Please sign in again."); };
+    window.addEventListener("khateeb-session-expired", expire);
+    return () => window.removeEventListener("khateeb-session-expired", expire);
+  }, []);
+
+  const visibleModules = useMemo(() => MODULES.filter(
+    (item) => !item.permission || session?.permissions?.[item.permission] !== false
+  ), [session]);
+  const visibleMainTabs = useMemo(() => MAIN_TABS.filter(
+    (item) => visibleModules.some((allowed) => allowed.key === item.key)
+  ), [visibleModules]);
 
   const activeModuleLabel = useMemo(
     () => MODULES.find((item) => item.key === module)?.label || module,
@@ -1459,84 +1515,32 @@ export default function App() {
   const loadData = useCallback(async () => {
     if (!isLoggedIn) return;
     setError("");
-    const hotelQuery = search.trim() ? `?hotel=${encodeURIComponent(search.trim())}` : "";
     const next = {};
 
     if (module === "smart") {
-      next.smart = await apiGet(`/smart-tasks/${destination}`);
+      next.smart = await apiGet(`/api/smart-tasks${queryString({ destination, hotel: search, limit: 100 })}`);
+    } else if (module === "alerts") {
+      next.smart = await apiGet(`/api/alerts${queryString({ destination, status: search, limit: 100 })}`);
     } else if (module === "dashboard") {
-      const params = [];
-      if (dashboardFilters.hotel.trim()) params.push(`hotel=${encodeURIComponent(dashboardFilters.hotel.trim())}`);
-      if (dashboardFilters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(dashboardFilters.dateFrom.trim())}`);
-      if (dashboardFilters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(dashboardFilters.dateTo.trim())}`);
-      params.push("kpi=total_hotels");
-      params.push("limit=20");
-      const query = `?${params.join("&")}`;
-      const [pricingDashboard, hotels, contractSummary, inhouseSummary] = await Promise.all([
-        apiGet(`/pricing/${destination}/dashboard${query}`),
-        apiGet(`/hotels/${destination}`),
-        apiGet(`/contract-situation/summary?destination=${destination}`),
-        apiGet("/inhouse/summary"),
-      ]);
-      next.pricingDashboard = pricingDashboard;
-      next.hotels = hotels;
-      next.contractSummary = contractSummary;
-      next.inhouseSummary = inhouseSummary;
-    } else if (module === "pricing") {
-      const params = [];
-      if (pricingFilters.hotel.trim()) params.push(`hotel=${encodeURIComponent(pricingFilters.hotel.trim())}`);
-      if (pricingFilters.stars.trim()) params.push(`stars=${encodeURIComponent(pricingFilters.stars.trim())}`);
-      if (pricingFilters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(pricingFilters.dateFrom.trim())}`);
-      if (pricingFilters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(pricingFilters.dateTo.trim())}`);
-      if (pricingFilters.room.trim()) params.push(`room=${encodeURIComponent(pricingFilters.room.trim())}`);
-      if (pricingFilters.board.trim()) params.push(`board=${encodeURIComponent(pricingFilters.board.trim())}`);
-      if (pricingFilters.price.trim()) params.push(`price=${encodeURIComponent(pricingFilters.price.trim())}`);
-      params.push("kpi=total_hotels");
-      params.push("limit=220");
-      const query = `?${params.join("&")}`;
-      const [pricingDashboard, hotels] = await Promise.all([
-        apiGet(`/pricing/${destination}/dashboard${query}`),
-        apiGet(`/hotels/${destination}`),
-      ]);
-      next.pricingDashboard = pricingDashboard;
-      next.hotels = hotels;
-    } else if (module === "turnover") {
-      const params = [];
-      if (revenueFilters.hotel.trim()) params.push(`hotel=${encodeURIComponent(revenueFilters.hotel.trim())}`);
-      if (revenueFilters.dateFrom.trim()) params.push(`date_from=${encodeURIComponent(revenueFilters.dateFrom.trim())}`);
-      if (revenueFilters.dateTo.trim()) params.push(`date_to=${encodeURIComponent(revenueFilters.dateTo.trim())}`);
-      const query = params.length ? `?${params.join("&")}` : "";
-      const rowsQuery = params.length ? `${query}&limit=120` : "?limit=120";
-      const [summary, rows, hotels] = await Promise.all([
-        apiGet(`/sales/${destination}/summary${query}`),
-        apiGet(`/sales/${destination}${rowsQuery}`),
-        apiGet(`/hotels/${destination}`),
-      ]);
-      next.summary = summary;
-      next.rows = rows;
-      next.hotels = hotels;
-    } else if (module === "contracts") {
-      const [summary, rows] = await Promise.all([
-        apiGet(`/contract-situation/summary?destination=${destination}`),
-        apiGet(`/contract-situation?destination=${destination}&limit=160`),
-      ]);
-      next.summary = summary;
-      next.rows = rows;
+      const dashboard = await apiGet(`/api/dashboard${queryString({ destination, hotel: dashboardFilters.hotel, date_from: dashboardFilters.dateFrom, date_to: dashboardFilters.dateTo })}`);
+      next.pricingDashboard = dashboard.pricing;
+      next.hotels = dashboard.hotels;
+      next.contractSummary = dashboard.contracts;
+      next.inhouseSummary = dashboard.inhouse;
+      next._updated_at = dashboard._updated_at;
     } else if (module === "data") {
-      next.data = await apiGet("/data-center");
+      next.data = await apiGet("/api/data-center");
     } else if (module === "availability") {
-      next.data = await apiGet(`/availability/${destination}?limit=160`);
-    } else if (module === "inhouse") {
-      next.data = await apiGet(`/inhouse/overview${queryString({ hotel: search, limit: 180 })}`);
-    } else if (module === "stopsale") {
-      next.data = await apiGet(`/stopsale/overview${queryString({ hotel: search, limit: 180 })}`);
-    } else if (module === "target") {
-      next.data = await apiGet("/target/overview?limit=180");
+      next.data = await apiGet(`/api/availability${queryString({ destination, hotel: search, limit: 160 })}`);
     } else if (module === "flight") {
-      next.data = await apiGet(`/flight-intelligence/overview${queryString({ destination, limit: 180 })}`);
+      next.data = await apiGet(`/api/flights${queryString({ destination, flight: search, limit: 180 })}`);
+    } else if (module === "profile") {
+      next.profile = await apiGet("/api/profile");
     }
 
     setPayload(next);
+    const stamp = next._updated_at || next.data?._updated_at || next.smart?._updated_at || new Date().toISOString();
+    setLastUpdated(stamp);
   }, [
     destination,
     isLoggedIn,
@@ -1580,7 +1584,7 @@ export default function App() {
   }, []);
 
   if (!isLoggedIn) {
-    return <LoginScreen onLogin={() => setIsLoggedIn(true)} />;
+    return <LoginScreen onLogin={(nextSession) => { setSession(nextSession); setIsLoggedIn(true); }} />;
   }
 
   return (
@@ -1595,8 +1599,8 @@ export default function App() {
             <Ionicons name="menu-outline" size={24} color="#dbe3ea" />
           </Pressable>
           <View>
-            <Text style={styles.brand}>Revenue Control</Text>
-            <Text style={styles.subtitle}>{activeModuleLabel} • connected to web system</Text>
+            <Text style={styles.brand}>Khateeb</Text>
+            <Text style={styles.subtitle}>{activeModuleLabel} • {lastUpdated ? `updated ${new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "live data"}</Text>
           </View>
           <View style={styles.headerActions}>
             <Pressable style={styles.iconButton} onPress={refresh}>
@@ -1614,7 +1618,7 @@ export default function App() {
           ))}
         </ScrollView>
 
-        {module !== "pricing" && module !== "dashboard" && module !== "turnover" && module !== "contracts" && (
+        {module !== "dashboard" && module !== "data" && module !== "profile" && (
           <View style={styles.searchPanel}>
             <Text style={styles.inputLabel}>{activeModuleLabel} Search</Text>
             <TextInput
@@ -1628,25 +1632,24 @@ export default function App() {
         )}
 
         {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator color="#f8d77a" size="large" />
-            <Text style={styles.loadingText}>Loading data...</Text>
-          </View>
+          <LoadingSkeleton />
         ) : error ? (
           <View style={styles.errorBox}>
             <Text style={styles.errorTitle}>API connection failed</Text>
             <Text style={styles.errorText}>{error}</Text>
             <Text style={styles.errorText}>Make sure the API is running on {API_BASE_URL}</Text>
+            <Pressable style={styles.retryButton} onPress={refresh}><Text style={styles.retryButtonText}>Try again</Text></Pressable>
           </View>
         ) : (
           <>
             {module === "smart" && <SmartTasksView data={payload.smart} />}
+            {module === "alerts" && <SmartTasksView data={payload.smart} />}
             {module === "dashboard" && (
               <DashboardView
                 pricingDashboard={payload.pricingDashboard}
                 contractSummary={payload.contractSummary}
                 inhouseSummary={payload.inhouseSummary}
-                hotelOptions={payload.hotels?.hotels || []}
+                hotelOptions={payload.hotels?.hotels || payload.hotels || []}
                 filters={dashboardFilters}
                 setFilters={setDashboardFilters}
                 onSearch={runDashboardSearch}
@@ -1656,48 +1659,15 @@ export default function App() {
                 }}
               />
             )}
-            {module === "pricing" && (
-              <PricingView
-                dashboard={payload.pricingDashboard}
-                hotelOptions={payload.hotels?.hotels || []}
-                destination={destination}
-                filters={pricingFilters}
-                setFilters={setPricingFilters}
-                onSearch={runPricingSearch}
-                onClear={() => {
-                  setPricingFilters({ hotel: "", stars: "", dateFrom: "", dateTo: "", room: "", board: "", price: "" });
-                  setActivePricingKpi("total_hotels");
-                  setPricingSearchVersion((value) => value + 1);
-                }}
-              />
-            )}
-            {module === "turnover" && (
-              <TurnoverView
-                summary={payload.summary}
-                rows={payload.rows || []}
-                destination={destination}
-                hotelOptions={payload.hotels?.hotels || []}
-                filters={revenueFilters}
-                setFilters={setRevenueFilters}
-                onSearch={runRevenueSearch}
-                onClear={() => {
-                  setRevenueFilters({ hotel: "", dateFrom: "", dateTo: "" });
-                  setRevenueSearchVersion((value) => value + 1);
-                }}
-              />
-            )}
-            {module === "contracts" && <ContractSituationView summary={payload.summary} rows={filteredRows} destination={destination} />}
             {module === "data" && <DataCenterView data={payload.data} />}
             {module === "availability" && <AvailabilityView data={payload.data} />}
-            {module === "inhouse" && <OperationalOverviewView data={payload.data} type="inhouse" title="Inhouse" />}
-            {module === "stopsale" && <OperationalOverviewView data={payload.data} type="stopsale" title="Stop Sale" />}
-            {module === "target" && <OperationalOverviewView data={payload.data} type="target" title="Target Achievement" />}
             {module === "flight" && <OperationalOverviewView data={payload.data} type="flight" title="Flight Intelligence" />}
+            {module === "profile" && <ProfileView session={{ ...session, user: payload.profile || session?.user }} />}
           </>
         )}
       </ScrollView>
       <View style={styles.bottomNav}>
-        {MAIN_TABS.map((item) => (
+        {visibleMainTabs.map((item) => (
           <BottomTab
             key={item.key}
             active={module === item.key}
@@ -1710,13 +1680,17 @@ export default function App() {
       {isDrawerOpen && (
         <DrawerMenu
           activeModule={module}
+          items={visibleModules}
+          session={session}
           onClose={() => setIsDrawerOpen(false)}
           onNavigate={(nextModule) => {
             setModule(nextModule);
             setIsDrawerOpen(false);
           }}
           onLogout={() => {
+            apiLogout();
             setIsDrawerOpen(false);
+            setSession(null);
             setIsLoggedIn(false);
           }}
         />
@@ -3194,6 +3168,30 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 12,
+  },
+  skeletonWrap: {
+    minHeight: 260,
+    gap: 12,
+    paddingVertical: 12,
+  },
+  skeletonCard: {
+    height: 82,
+    borderRadius: 18,
+    backgroundColor: "#ebe2d1",
+    borderWidth: 1,
+    borderColor: "#e0d3bc",
+  },
+  retryButton: {
+    alignSelf: "center",
+    marginTop: 14,
+    borderRadius: 14,
+    backgroundColor: "#d8aa43",
+    paddingHorizontal: 24,
+    paddingVertical: 11,
+  },
+  retryButtonText: {
+    color: "#18212b",
+    fontWeight: "700",
   },
   loadingText: {
     fontFamily: APP_FONT,

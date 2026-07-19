@@ -1,10 +1,16 @@
 {
   "expo": {
-    "name": "Revenue Control",
+    "name": "Khateeb",
     "slug": "khateeb-revenue-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./assets/app-icon.png",
+    "splash": {
+      "image": "./assets/app-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f4efe5"
+    },
     "android": {
       "package": "com.khateeb.revenuecontrol",
       "versionCode": 1
@@ -16,7 +22,13 @@
       "**/*"
     ],
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/app-icon.png",
+      "name": "Khateeb",
+      "shortName": "Khateeb",
+      "themeColor": "#d8aa43",
+      "backgroundColor": "#f4efe5"
     }
   }
 }
